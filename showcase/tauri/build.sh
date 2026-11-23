@@ -10,6 +10,7 @@ cp -R ../roamies ../onboarding ../panel dist/
 ../tauri/sidecar/bundle.sh
 # Ship a Node.js runtime with the app, for the target being built (--target <triple>, else this machine).
 TARGET=""; prev=""; for a in "$@"; do [ "$prev" = "--target" ] && TARGET="$a"; prev="$a"; done
+MODE="${1:-}"; [ $# -gt 0 ] && shift
 ../tauri/sidecar/fetch-node.sh ${TARGET:+"$TARGET"}
 # Windows helpers: voice (Parakeet speech on the PC) and hands (windows, capture, UI Automation, OCR); macOS
 # builds its Swift twins in build.rs. Linux has the voice helper only (the same Rust one as Windows).
@@ -32,7 +33,15 @@ case "$TRIPLE" in
   *-linux-*)
     mkdir -p src-tauri/binaries
     cargo build --release --locked --manifest-path src-tauri/voice-win/Cargo.toml --target "$TRIPLE"
-    cp "src-tauri/voice-win/target/$TRIPLE/release/roamies-voice" "src-tauri/binaries/roamies-voice-$TRIPLE" ;;
+    cp "src-tauri/voice-win/target/$TRIPLE/release/roamies-voice" "src-tauri/binaries/roamies-voice-$TRIPLE"
+    # The hands helper is a Python script (hands-linux/README.md says what it needs). Tauri bundles it as an
+    # external binary, and in dev it goes beside the debug app, which is where the app looks for it.
+    install -m 755 src-tauri/hands-linux/roamies-hands "src-tauri/binaries/roamies-hands-$TRIPLE"
+    if [ "$MODE" = dev ]; then
+      DEV="src-tauri/target/debug"; [ -n "$TARGET" ] && DEV="src-tauri/target/$TARGET/debug"
+      mkdir -p "$DEV"
+      install -m 755 src-tauri/hands-linux/roamies-hands "$DEV/roamies-hands"
+    fi ;;
 esac
 cd src-tauri
 # macOS signing: APPLE_SIGNING_IDENTITY if set, else the first Developer ID Application certificate in
@@ -42,5 +51,4 @@ if [ "$(uname)" = "Darwin" ] && [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
   export APPLE_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:--}"
 fi
 # ./build.sh release --target <triple> builds for one target (used by the release workflow).
-MODE="${1:-}"; [ $# -gt 0 ] && shift
 if [ "$MODE" = "dev" ]; then cargo build; else cargo tauri build ${TAURI_BUNDLES:+--bundles $TAURI_BUNDLES} "$@"; fi

@@ -42,12 +42,12 @@ assert.ok(hasVoice('darwin') && hasVoice('win32') && hasVoice('linux') && !hasVo
 assert.ok(!needsVoiceModel('darwin') && needsVoiceModel('win32') && needsVoiceModel('linux'));
 // The wake word (#97): Apple's speech on macOS, the Parakeet helper on Windows and Linux.
 assert.ok(hasWakeWord('darwin') && hasWakeWord('win32') && hasWakeWord('linux') && !hasWakeWord('freebsd'));
-// No hands helper on Linux yet: nothing reads or works other apps, no area snap, no circling.
+// Without the helper, nothing reads or works other apps, and there is no area snap or circling.
 assert.ok(!hasHands('linux', '') && !canSnap('linux', '') && !canCircle('linux'));
 
-// Ask About an Area needs the helper's area selection: macOS, and Windows with the helper there.
-assert.ok(canSnap('darwin', '') && canSnap('win32', 'C:\\Roamies\\roamies-hands.exe'));
-assert.ok(!canSnap('win32', '') && !canSnap('linux', '/x/roamies-hands'));
+// Ask About an Area needs the helper's area selection: macOS, and Windows or Linux with the helper there.
+assert.ok(canSnap('darwin', '') && canSnap('win32', 'C:\\Roamies\\roamies-hands.exe') && canSnap('linux', '/x/roamies-hands'));
+assert.ok(!canSnap('win32', '') && !canSnap('linux', ''));
 assert.ok(hasHands('darwin', '') && hasHands('win32', 'x') && !hasHands('win32', ''));
 assert.ok(canCircle('darwin') && canCircle('win32') && !canCircle('linux'));
 

@@ -5,6 +5,7 @@
     },
     "externalBin": [
       "binaries/roamies-voice",
+      "binaries/roamies-hands",
       "binaries/roamies-node"
     ],
     "linux": {

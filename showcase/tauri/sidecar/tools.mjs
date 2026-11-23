@@ -153,9 +153,38 @@ async function launchApp(name, hands) {
   return false;
 }
 // read_window and act_in_app output: visible controls first, then up to 15 scrolled out of view.
+// Windows grouped by workspace, as the Linux helper reports them: the current one marked, fullscreen and floating
+// state, the frontmost app, and a Zen window's spaces and tabs. Exported for the desktop snapshot in the sidecar.
+export function formatWindows(res) {
+  const ws = res?.activeWorkspace;
+  const groups = new Map();
+  for (const w of res?.windows ?? []) {
+    const key = String(w.workspace ?? '?');
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(w);
+  }
+  const keys = [...groups.keys()].sort((a, b) => (Number(a) || 999) - (Number(b) || 999));
+  const out = [];
+  for (const key of keys) {
+    out.push(`Workspace ${key}${String(key) === String(ws) ? ' (current)' : ''}:`);
+    for (const w of groups.get(key)) {
+      const fs = w.fullscreen === 2 ? '  (fullscreen)' : w.fullscreen ? '  (maximized)' : '';
+      out.push(`  window:${w.id}  ${w.app}${w.title ? ` — ${w.title}` : ''}${fs}${w.floating ? '  (floating)' : ''}${w.frontApp ? '  (frontmost app)' : ''}`);
+      if (w.zen) {
+        out.push(`    Zen workspace: ${w.zen.active ?? '?'} (active)`);
+        for (const sp of w.zen.spaces ?? []) out.push(`    ${sp.name}${sp.active ? ' (active)' : ''}: ${(sp.tabs ?? []).slice(0, 12).map((t) => t.title).join(' | ')}`);
+      }
+    }
+  }
+  return out.join('\n') || 'No windows open.';
+}
+
 function controlList(controls, texts = []) {
+  controls = Array.isArray(controls) ? controls : [];
+  if (typeof texts === 'string') texts = [texts];
+  if (!Array.isArray(texts)) texts = [];
   const vis = controls.filter((c) => !c.offscreen), off = controls.filter((c) => c.offscreen).slice(0, 15);
-  const line = (c) => `${c.id} ${c.role}${c.label ? ` "${c.label}"` : ''}${c.value ? ` = "${c.value}"` : ''}${c.focused ? ' (focused)' : ''}`;
+  const line = (c) => `${c.id} ${c.role}${c.label ? ` "${c.label}"` : ''}${c.value ? ` = "${c.value}"` : ''}${c.focused ? ' (focused)' : ''}${c.current ? ' (current tab)' : ''}`;
   const labels = new Set(controls.map((c) => c.label));
   const words = texts.filter((t) => !labels.has(t));
   return vis.map(line).join('\n')
@@ -286,8 +315,9 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
   async function hands(...args) {
     if (!HANDS) throw new Error('This needs the Roamies app.');
     // Acting in an app may take the real cursor: meanwhile clicks go through the overlay, even where the Sidekick or
-    // its bubble sits on the spot being clicked.
-    const acting = args[0] === 'act';
+    // its bubble sits on the spot being clicked. Window commands move or focus things too; the read-only ones don't.
+    const wmAction = args[0] === 'wm' ? (() => { try { return JSON.parse(args[1]).action; } catch { return null; } })() : null;
+    const acting = args[0] === 'act' || (args[0] === 'wm' && !['list', 'monitors', 'workspaces'].includes(wmAction));
     if (acting) ui({ kind: 'hands', on: true });
     // While it acts, the Sidekick hops to where each step lands. Only the spot is passed on, never what is typed.
     const onLine = acting ? (line) => {
@@ -313,16 +343,23 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
   }
   async function readWindow(target = 'front') {
     const t = String(target || 'front');
-    const read = () => Promise.all([hands('ui', t === 'front' ? 'front' : `app:${t}`), hands('windows').catch(() => null)]);
+    const read = () => Promise.all([hands('ui', t === 'front' ? 'front' : t.startsWith('window:') ? t : `app:${t}`), hands('windows').catch(() => null)]);
     const [res, all] = await read().catch(async (err) => {
       if (t === 'front' || !/No matching window/.test(String(err?.message ?? err)) || !(await launchApp(t, hands))) throw err;
       return read();
     });
-    lastRead = { win: res.window.id, app: res.window.app, controls: res.controls, turn };
-    const others = (all?.windows ?? []).filter((w) => w.app === res.window.app && w.id !== res.window.id).length;
-    const head = `${res.window.app}${res.window.title ? ` — ${res.window.title}` : ''}${others ? ` (front window; ${res.window.app} has ${others} more, which draw with text also searches)` : ''}`;
-    if (!res.controls.length) return `${head}\n${res.note}`;
-    return `${head}\n${controlList(res.controls, res.texts)}${res.elsewhere?.length ? `\nElsewhere on the page (scrolled out of view): ${res.elsewhere.join(' | ')}` : ''}`;
+    // A helper without accessibility (Linux without AT-SPI) reports text only, so every field is checked rather than assumed.
+    const win = res.window ?? { id: null, app: t, title: '' };
+    const controls = Array.isArray(res.controls) ? res.controls : [];
+    const texts = Array.isArray(res.texts) ? res.texts : res.texts ? [String(res.texts)] : [];
+    const elsewhere = Array.isArray(res.elsewhere) ? res.elsewhere : res.elsewhere ? [String(res.elsewhere)] : [];
+    const appName = win.app ?? t;
+    lastRead = { win: win.id, app: appName, controls, turn };
+    const others = (all?.windows ?? []).filter((w) => w.app === appName && w.id !== win.id).length;
+    const head = `${appName}${win.title ? ` — ${win.title}` : ''}${others ? ` (front window; ${appName} has ${others} more, which draw with text also searches)` : ''}`;
+    if (!controls.length && !texts.length) return `${head}\n${res.note || 'No accessibility tree was available and no text was read from it (OCR found nothing). Use take_screenshot and click_at, or click_text with the visible words.'}`;
+    if (!controls.length) return `${head}\nText on screen: ${texts.join(' | ')}`;
+    return `${head}\n${controlList(controls, texts)}${elsewhere.length ? `\nElsewhere on the page (scrolled out of view): ${elsewhere.join(' | ')}` : ''}`;
   }
   // A yes/no in an input bubble. Stop (or the turn ending) counts as no.
   // Only the yes/no is skipped (skipAllow: the user turned "Skip Allow prompts" on). BLOCK verdicts never reach here.
@@ -357,7 +394,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
   async function screenshot({ target = 'screen' } = {}, ctx) {
     const file = path.join(os.tmpdir(), `sidekick-${Date.now()}.jpg`);
     // Windows without the helper (or when it fails on the whole screen): PowerShell's screenshot below.
-    const viaHands = process.platform === 'darwin' || (process.platform === 'win32' && HANDS);
+    const viaHands = process.platform === 'darwin' || HANDS;
     const t = String(target || 'screen').trim();
     const shot = viaHands ? await handsShot(file, t).catch((e) => { if (process.platform === 'win32' && t === 'screen') return null; throw e; }) : null;
     if (shot) return shot;
@@ -491,7 +528,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
     ink.watch.unref?.();
   }
   // Steps that change what a window shows: the agent doing one is the screen changing under a drawing.
-  const CHANGING = new Set(['click', 'click_text', 'press_button', 'key', 'click_at', 'choose', 'hover']);
+  const CHANGING = new Set(['click', 'click_text', 'press_button', 'key', 'click_at', 'choose', 'hover', 'tab', 'workspace', 'open_tab', 'close_tab', 'move_tab', 'workspace_create', 'workspace_rename']);
   const agentChangesScreen = () => { if (windowBound() && !ink.active) screenChanged('agent'); };
   const toClipboard = (text) => copyText(text, askShell);
   // How each kind of place is found. retry: just after a click, when a menu or dialog may still be opening.
@@ -775,13 +812,39 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
     // The hands helper's tools: on macOS always (they explain what's missing), elsewhere when the helper is there.
     ...(process.platform === 'darwin' || HANDS ? [
       {
-        name: 'list_windows', description: 'List the open app windows (app, title, id), front to back.',
+        name: 'list_windows', description: 'List every open app window grouped by workspace, with the current workspace, fullscreen and floating state, and the frontmost app.',
         parameters: z.object({}),
-        execute: async () => {
-          const res = await hands('windows');
-          return res.windows.map((w) => `window:${w.id}  ${w.app}${w.title ? ` — ${w.title}` : ''}${w.frontApp ? '  (frontmost app)' : ''}`).join('\n') || 'No windows open.';
-        },
+        execute: async () => formatWindows(await hands('windows')),
       },
+      ...(process.platform === 'linux' ? [{
+        name: 'window_control',
+        description: "See and arrange the desktop the way the user would, no hyprctl needed (run_command refuses it): list every window grouped by workspace, focus a window or a direction, switch workspace, move a window to another workspace or a special one, open an app, close, float, pin, centre, resize, swap, pseudo-tile or fullscreen a window, bring it to the top, cycle windows, focus a monitor, move this workspace to a monitor, or read monitors, workspaces and Hyprland options (and set one with option + value). window: an id from list_windows or an app name. workspace: '1', '2', 'special:name'. name: a special workspace's name. monitor: e.g. 'eDP-1'. drag: from and to [x,y] in screen points. click/scroll: x, y. For a real held drag in a game or Electron app, use pointer_drag. option: key like 'general:gaps_in'.",
+        parameters: z.object({
+          action: z.enum(['list', 'focus', 'workspace', 'move', 'open', 'close', 'fullscreen', 'drag', 'click', 'scroll', 'float', 'pin', 'center', 'resize', 'swap', 'pseudo', 'bring_to_top', 'special', 'move_to_special', 'focus_direction', 'focus_monitor', 'workspace_to_monitor', 'last', 'urgent', 'cycle', 'monitors', 'workspaces', 'option', 'rename_workspace', 'swap_monitors', 'group_toggle', 'group_next', 'group_prev', 'dpms']),
+          window: z.string().optional(), workspace: z.string().optional(), app: z.string().optional(),
+          from: z.array(z.number()).length(2).optional(), to: z.array(z.number()).length(2).optional(), x: z.number().optional(), y: z.number().optional(),
+          button: z.number().int().optional(), amount: z.number().int().optional(), direction: z.enum(['up', 'down', 'left', 'right']).optional(),
+          width: z.number().int().optional(), height: z.number().int().optional(), relative: z.boolean().optional(), mode: z.string().optional(),
+          name: z.string().optional(), monitor: z.string().optional(), key: z.string().optional(), value: z.string().optional(), target: z.string().optional(),
+        }),
+        execute: async (args) => {
+          const res = await hands('wm', JSON.stringify(args));
+          if (res.ok === false) throw new Error(res.error || 'That did not work.');
+          return args.action === 'list' ? formatWindows(res) : res.text || res.done || 'Done.';
+        },
+      }, {
+        name: 'pointer_drag',
+        description: 'A real button-held drag through a uinput virtual mouse: press at from, move in small interpolated steps, release at to. Use for games and Electron apps (shapez belts, camera pan) where a click plus separate moves does not hold the button. button: 1 left (default), 2 right, 3 middle. from and to are screen points. Existing click and click_at are unchanged.',
+        parameters: z.object({
+          from: z.array(z.number()).length(2), to: z.array(z.number()).length(2),
+          button: z.number().int().min(1).max(3).optional(), steps: z.number().int().min(2).max(200).optional(), delay_ms: z.number().min(1).max(100).optional(),
+        }),
+        execute: async ({ from, to, button = 1, steps = 24, delay_ms = 12 }) => {
+          const res = await hands('pointer', JSON.stringify({ action: 'drag', from, to, button, steps, delay: delay_ms / 1000 }));
+          if (res.ok === false) throw new Error(res.error || 'The drag did not work.');
+          return res.done;
+        },
+      }] : []),
       {
         name: 'read_window',
         description: "List an app window's controls (id, role, label, value) and all its text, including what's scrolled out of view, so you can read a whole page without scrolling or a screenshot. Needed for act_in_app ids; not for marking or clicking by visible words (draw or click_text do that). target: 'front', an app name, or 'browser'.",
@@ -790,17 +853,18 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
       },
       {
         name: 'act_in_app',
-        description: "Do things in another app: click, fill forms, pick from dropdowns and date pickers, scroll, press keys. Steps run in order: put a whole task in one call. {do:'click_text', text}: a link, button or tab by its visible words (no read_window needed). {do:'fill', field, text}: one text field by its label, placeholder or id; replaces its text and checks it took (never click a label and type). {do:'choose', field, option}: an option in a dropdown, menu, type-to-search box or picker, however long the list (never scroll a list yourself). {do:'hover', text, near} (or id, or x, y): rests the pointer to show hidden controls (a ⋯ menu), then click_text what appears, in the same call. {do:'scroll', direction, amount, text or id}: only for content that loads as you scroll; to_end: true keeps going until a feed stops loading (things already on the page need no scrolling: click_text, fill and draw find them). {do:'click', id}; {do:'key', key} ('return', 'tab', 'escape'); {do:'type', text} only with the cursor already in a field; {do:'click_at', x, y} screenshot pixels, last resort; {do:'wait', seconds}. near: words from one item (its author, a post's first words) when many controls look alike (a Reply under every post). Dates: fill them as the page writes them (10/30/2026); if a calendar opens, choose the month and year, then click_text the day. Web addresses: use open, not the address bar; to search a site, open its search URL (youtube.com/results?search_query=…) unless asked to use its box (then fill it and press return). The result shows the window after the steps, with fresh ids and values: check it there, not with read_window. Every item on a long page: to_end if it loads more, one read_window, then one call doing every item with near; never survey a page by scrolling and screenshots. Never pay, send or delete unless asked for exactly that; pointing at a button isn't a request to click it. Delete, pay, send and sign-out clicks ask the user themselves, so when asked to click one, call this straight away instead of asking.",
+        description: "Do things in another app: click, fill forms, pick from dropdowns and date pickers, scroll, press keys. Steps run in order: put a whole task in one call. {do:'click_text', text}: a link, button or tab by its visible words (no read_window needed). {do:'fill', field, text}: one text field by its label, placeholder or id; replaces its text and checks it took (never click a label and type). {do:'choose', field, option}: an option in a dropdown, menu, type-to-search box or picker, however long the list (never scroll a list yourself). {do:'hover', text, near} (or id, or x, y): rests the pointer to show hidden controls (a ⋯ menu), then click_text what appears, in the same call. {do:'scroll', direction, amount, text or id}: only for content that loads as you scroll; to_end: true keeps going until a feed stops loading (things already on the page need no scrolling: click_text, fill and draw find them). {do:'click', id}; {do:'key', key} ('return', 'tab', 'escape'); {do:'type', text} only with the cursor already in a field; {do:'click_at', x, y} screenshot pixels, last resort; {do:'tab', text} (or workspace + index, or a control id) switches browser tabs through the browser itself, not by clicking the sidebar; {do:'workspace', name} switches a browser workspace and reports the tab it lands on; {do:'open_tab', url, workspace} opens a page there; {do:'close_tab', text|url|index, workspace} closes one; {do:'move_tab', text|url|index, workspace, to} moves one by reopening it there; {do:'workspace_create', name} and {do:'workspace_rename', workspace, name} change the workspace list; {do:'wait', seconds}. near: words from one item (its author, a post's first words) when many controls look alike (a Reply under every post). Dates: fill them as the page writes them (10/30/2026); if a calendar opens, choose the month and year, then click_text the day. Web addresses: use open, not the address bar; to search a site, open its search URL (youtube.com/results?search_query=…) unless asked to use its box (then fill it and press return). The result shows the window after the steps, with fresh ids and values: check it there, not with read_window. Every item on a long page: to_end if it loads more, one read_window, then one call doing every item with near; never survey a page by scrolling and screenshots. Never pay, send or delete unless asked for exactly that; pointing at a button isn't a request to click it. Delete, pay, send and sign-out clicks ask the user themselves, so when asked to click one, call this straight away instead of asking.",
         parameters: z.object({
           target: z.string().optional(),
           // Steps sent as JSON text, or one step on its own, as some free models do (#159), are read as the list they mean.
           steps: z.preprocess((v) => { const x = unjson(v); return x && typeof x === 'object' && !Array.isArray(x) ? [x] : x; }, z.array(z.object({
             // read_window and take_screenshot aren't steps (the result already shows the window), but models put them
             // in anyway; they're dropped instead of failing the whole call.
-            do: z.enum(['click_text', 'fill', 'choose', 'scroll', 'set', 'focus', 'click', 'type', 'key', 'click_at', 'hover', 'wait', 'read_window', 'take_screenshot', 'screenshot']),
+            do: z.enum(['click_text', 'fill', 'choose', 'scroll', 'set', 'focus', 'click', 'type', 'key', 'click_at', 'hover', 'wait', 'tab', 'workspace', 'open_tab', 'close_tab', 'move_tab', 'workspace_create', 'workspace_rename', 'read_window', 'take_screenshot', 'screenshot']),
             id: z.number().int().optional(), field: z.string().optional(), text: z.string().optional(), option: z.string().optional(), near: z.string().optional(),
             key: z.string().optional(), direction: z.enum(['down', 'up', 'left', 'right']).optional(), amount: z.number().int().optional(), to_end: z.boolean().optional(),
             x: z.number().optional(), y: z.number().optional(), seconds: z.number().optional(),
+            workspace: z.string().optional(), index: z.number().int().optional(), url: z.string().optional(), to: z.string().optional(), name: z.string().optional(), current: z.string().optional(),
           })).min(1).max(40)),
         }),
         executionMode: 'sequential',
@@ -826,9 +890,24 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
           const upTo = firstClick < 0 ? steps.length : firstClick + 1;
           const spec = t === 'front' || t.startsWith('window:') ? t : `app:${t}`;
           const live = steps.slice(0, upTo).some((s) => s.id != null) ? await liveControls(spec) : null;
+          // A point from an old screenshot can be in the wrong window: take a fresh one when it may not match.
+          const wantsPoint = steps.some((s) => (s.do === 'click_at' || s.do === 'hover') && s.x != null && s.y != null);
+          if (wantsPoint) {
+            let targetWin = null;
+            if (t.startsWith('window:')) targetWin = t.slice(7);
+            else {
+              const loc = await hands('locate', t === 'front' ? 'front' : spec).catch(() => null);
+              targetWin = loc?.window?.id ?? null;
+            }
+            const wrong = lastShot && targetWin && lastShot.win != null && String(lastShot.win) !== String(targetWin);
+            if (wrong || lastShot?.used || !lastShot || lastShot.unmapped || lastShot.turn !== turn) {
+              const file = path.join(os.tmpdir(), `sidekick-${Date.now()}.jpg`);
+              await handsShot(file, t).catch(() => null);
+            }
+          }
           const mapped = [];
           for (const [i, s] of steps.entries()) {
-            if ((s.do === 'click_at' || s.do === 'hover') && s.x != null && s.y != null) { const [x, y] = await shotPoint(s.x, s.y); mapped.push({ ...s, x, y, global: true }); }
+            if ((s.do === 'click_at' || s.do === 'hover') && s.x != null && s.y != null) { const [x, y] = await shotPoint(s.x, s.y); mapped.push({ ...s, x, y, global: true, rel: [s.x, s.y] }); }
             else if (live && i < upTo && s.id != null) { const c = live(s.id); mapped.push({ ...s, id: c.id, label: c.label }); }
             else mapped.push(s);
           }
@@ -855,7 +934,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
             }
             delete s.label;
           }
-          const plan = { steps: mapped, ...(t === 'front' ? {} : t.startsWith('window:') ? { window: +t.slice(7) } : { app: t }) };
+          const plan = { steps: mapped, ...(t === 'front' ? {} : t.startsWith('window:') ? { window: t.slice(7) } : { app: t }) };
           const act = () => hands('act', JSON.stringify(plan));
           let res;
           try {
@@ -874,9 +953,14 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
           }
           return finish(res);
           function finish(res) {
-            if (!res.controls) return `In ${res.window.app}: ${res.done.join(', ')}.`;
-            lastRead = { win: res.window.id, app: res.window.app, controls: res.controls, turn };
-            return `In ${res.window.app}: ${res.done.join(', ')}.\nNow showing: ${res.window.title || res.window.app}\n${controlList(res.controls, res.texts)}`;
+            // A helper without accessibility reports no controls: still say what happened, and never assume a window.
+            const win = res.window ?? lastRead ?? { id: null, app: asked, title: '' };
+            const appName = win.app ?? asked;
+            const done = Array.isArray(res.done) ? res.done : [];
+            const controls = Array.isArray(res.controls) ? res.controls : [];
+            if (!controls.length) return `In ${appName}: ${done.join(', ') || 'done'}.`;
+            lastRead = { win: win.id, app: appName, controls, turn };
+            return `In ${appName}: ${done.join(', ') || 'done'}.\nNow showing: ${win.title || appName}\n${controlList(controls, res.texts)}`;
           }
         },
       },
@@ -959,6 +1043,10 @@ A drawing stays until it's cleared, the window changes or the next one replaces 
       parameters: z.object({ command: z.string() }), executionMode: 'sequential', timeoutMs: 190_000, // up to 2 min to answer, then the 60 s run
       execute: async ({ command }, ctx) => {
         if (!allowActions()) throw new Error(actionsOff);
+        // With the Linux helper there is a real tool for this: one that respects the window the user means.
+        if (process.platform === 'linux' && HANDS && /(^|[;&|]\s*)(sudo\s+)?hyprctl\b/.test(String(command))) {
+          throw new Error('Use window_control for windows, workspaces, focus, move, open, drag, click and scroll, and act_in_app for clicking or typing in an app. Do not run hyprctl.');
+        }
         const v = classifyCommand(command, HOME, { exists: existsSync, cwd: workdir, own });
         if (v.level === BLOCK) throw new Error(`Blocked for safety: ${v.reason} Don't try to get around this; tell ${userName} what you wanted to do instead.`);
         if (v.level === ASK && !(await confirm(`Run \`${command.length > 70 ? command.slice(0, 67) + '…' : command}\`?${v.reason ? ' ' + v.reason : ''}`, ctx))) {
