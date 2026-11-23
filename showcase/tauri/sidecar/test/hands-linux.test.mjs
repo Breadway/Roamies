@@ -51,6 +51,13 @@ assert.equal(await tool('window_control').execute({ action: 'list' }), windows);
 fs.writeFileSync(log, '');
 assert.equal(await tool('window_control').execute({ action: 'focus', window: '7' }), '1 2');
 assert.deepEqual(calls().find((c) => c[0] === 'wm'), ['wm', '{"action":"focus","window":"7"}']);
+// Opening from window_control gets the open tool's check: the helper passes the target straight to xdg-open.
+fs.writeFileSync(log, '');
+assert.equal(await tool('window_control').execute({ action: 'open', app: 'Zen' }), '1 2');
+assert.deepEqual(calls(), [['wm', '{"action":"open","app":"Zen"}']]);
+fs.writeFileSync(log, '');
+await assert.rejects(tool('window_control').execute({ action: 'open', target: '/etc/hosts' }), /Blocked for safety/);
+assert.deepEqual(calls(), [], 'a refused open never reaches the helper');
 
 assert.equal(await tool('pointer_drag').execute({ from: [10, 20], to: [30, 40] }), 'dragged 24 steps');
 const pointer = calls().find((c) => c[0] === 'pointer');
