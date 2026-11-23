@@ -699,11 +699,16 @@ tools.push(...agents.tools);
 const opencode = createOpencodeBridge({ ui, enqueue, say, userName, log: (kind, data) => { try { logLine(kind, data); } catch {} } });
 
 // Breadboard chat: DMs and @pings become normal turns, and the answer is posted back to the room.
-breadboardChat = createBreadboardChat({
-  enqueue, ui, agent: 'jarvis',
-  log: (kind, data) => { try { logLine(kind, data); } catch {} },
-});
-breadboardChat.start().catch(() => {});
+// A missing token or config only costs the chat watcher, never the app's start.
+try {
+  breadboardChat = createBreadboardChat({
+    enqueue, ui, agent: 'jarvis',
+    log: (kind, data) => { try { logLine(kind, data); } catch {} },
+  });
+  breadboardChat.start().catch(() => {});
+} catch (e) {
+  try { logLine('breadboard_chat', { error: String(e?.message ?? e).slice(0, 160) }); } catch {}
+}
 {
   const byName = (name) => tools.find((t) => t.name === name);
   const sendAgent = byName('send_agent');
