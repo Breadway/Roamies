@@ -194,7 +194,8 @@ jobs:
           docker run -d --name mutter --network host -e DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix ubuntu:24.04 bash -c \
             'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends mutter dbus libgl1-mesa-dri >/dev/null && dpkg-query -W mutter && exec dbus-run-session -- mutter --x11 --replace' >/dev/null
           wm=false
-          for _ in $(seq 240); do xprop -root _NET_SUPPORTING_WM_CHECK | grep -q 'window id' && { wm=true; break; }; sleep 1; done
+          for _ in $(seq 600); do xprop -root _NET_SUPPORTING_WM_CHECK | grep -q 'window id' && { wm=true; break; }; sleep 1; done
+          docker ps -a --filter name=mutter --format '{{.Names}} {{.Status}}'
           docker logs mutter 2>&1 | tail -15
           $wm || { echo "Mutter didn't start"; exit 1; }
           src-tauri/target/debug/roamies > "$RUNNER_TEMP/app-mutter.log" 2>&1 &
