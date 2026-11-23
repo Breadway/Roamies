@@ -696,7 +696,7 @@ tools.push(...createMcpTools({
 // Linux: the desktop in one round trip, instead of list_windows plus a few window_control calls.
 if (process.platform === 'linux' && HANDS_OK) tools.push({
   name: 'desktop_snapshot',
-  description: 'The desktop in one call: the focused window, monitors, workspaces, the Zen workspace and tab counts (with the tab showing now), and the avatar pin. Use it before acting instead of list_windows plus several window_control calls.',
+  description: 'The desktop in one call: the focused window, monitors, workspaces and the avatar pin. Use it before acting instead of list_windows plus several window_control calls.',
   parameters: z.object({}),
   execute: async () => {
     const [wins, mons, wss] = await Promise.all([
@@ -710,14 +710,6 @@ if (process.platform === 'linux' && HANDS_OK) tools.push({
     lines.push(`Current workspace: ${wins?.activeWorkspace ?? '?'}`);
     lines.push(`Monitors:\n${mons?.text ?? 'unavailable'}`);
     lines.push(`Workspaces:\n${wss?.text ?? 'unavailable'}`);
-    const zwin = (wins?.windows ?? []).find((w) => w.zen);
-    if (zwin?.zen) {
-      const z = zwin.zen;
-      const spaces = (z.spaces ?? []).map((sp) => `${sp.name}${sp.active ? ' (active)' : ''}: ${sp.tabs?.length ?? 0}`);
-      lines.push(`Zen: ${z.active ?? '?'} active. ${spaces.join(' | ')}`);
-      const cur = (z.spaces ?? []).find((sp) => sp.active)?.tabs?.find((t) => t.current);
-      if (cur) lines.push(`Zen tab now: "${cur.title}" — ${cur.url}`);
-    }
     const pin = config.avatarPin;
     lines.push(`Avatar: ${!pin ? 'free (follows the cursor)' : pin.corner ? `pinned ${String(pin.corner).replace('-', ' ')}` : `pinned at ${pin.x ?? 'middle'}, ${pin.y ?? 'middle'}`}`);
     return lines.join('\n');

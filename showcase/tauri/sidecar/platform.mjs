@@ -78,11 +78,11 @@ export const hasWakeWord = (platform) => platform === 'darwin' || needsVoiceMode
 
 /** Whether the hands helper's tools are on: always on macOS (they explain what's missing), elsewhere when the
  *  helper is there (Roamies sets ROAMIES_HANDS to it). */
-export const hasHands = (platform, hands) => platform === 'darwin' || !!hands;
+export const hasHands = (platform, hands, env = process.env) => platform === 'darwin' || (!!hands && (platform !== 'linux' || !!env.HYPRLAND_INSTANCE_SIGNATURE));
 
 /** Ask About an Area (the snap shortcut and menu item): the helper's area selection, on macOS and Windows.
  *  Linux has no hands helper yet, so none of the three below. */
-export const canSnap = (platform, hands) => platform === 'darwin' || ((platform === 'win32' || platform === 'linux') && !!hands);
+export const canSnap = (platform, hands, env = process.env) => platform === 'darwin' || ((platform === 'win32' || (platform === 'linux' && !!env.HYPRLAND_INSTANCE_SIGNATURE)) && !!hands);
 
 /** Circling something while holding the talk keys: the voice helper draws it, on macOS and Windows. */
 export const canCircle = (platform) => platform === 'darwin' || platform === 'win32';

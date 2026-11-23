@@ -27,6 +27,7 @@ if (a[0] === 'locate') o = { ok: true, window: win };
 console.log(JSON.stringify(o));
 `);
 process.env.ROAMIES_HANDS = fake;
+process.env.HYPRLAND_INSTANCE_SIGNATURE = 'test';
 
 const { createTools } = await import('../tools.mjs');
 const { canSnap } = await import('../platform.mjs');
@@ -44,8 +45,7 @@ assert.match(windows, /Workspace 1:/);
 assert.match(windows, /Workspace 2 \(current\):/);
 assert.match(windows, /window:8 {2}Term — shell {2}\(fullscreen\) {2}\(floating\)/);
 assert.match(windows, /window:7 {2}Zen — Docs {2}\(frontmost app\)/);
-assert.match(windows, /Zen workspace: Work \(active\)/);
-assert.match(windows, /Work \(active\): Docs\n {4}Later: Mail/);
+assert.doesNotMatch(windows, /Zen workspace|Later: Mail|https:\/\/example\.test\/docs/, 'tab titles and addresses are not sent');
 
 assert.equal(await tool('window_control').execute({ action: 'list' }), windows);
 fs.writeFileSync(log, '');
@@ -64,13 +64,21 @@ const acted = await tool('act_in_app').execute({ target: 'Zen', steps: [{ do: 't
 assert.equal(acted, 'In Zen: tab.');
 assert.deepEqual(JSON.parse(calls().find((c) => c[0] === 'act')[1]).steps, [{ do: 'tab', text: 'Docs' }]);
 
-await assert.rejects(tool('run_command').execute({ command: 'hyprctl workspaces' }, ctx), /Use window_control/);
+await assert.rejects(tool('run_command').execute({ command: 'hyprctl workspaces' }, ctx), /Use the window tools/);
 
 fs.writeFileSync(log, '');
 const shot = await tool('take_screenshot').execute({ target: 'screen' }, ctx);
 assert.match(shot.content[0].text, /1000×800 px/);
 assert.ok(calls().some((c) => c[0] === 'capture'));
 assert.ok(!calls().some((c) => c[0] === 'locate'), 'screen shots need no window lookup');
+
+// Window and pointer actions are off when Allow actions is off, like act_in_app.
+{
+  const off = createTools({ allowActions: () => false, ui: noop, ask: async () => false, openUrl: noop, onCommitments: noop, showList: noop, fmtWhen: String, commitmentsText: () => '', userName: 'Test' });
+  const offTool = (n) => off.tools.find((t) => t.name === n);
+  await assert.rejects(offTool('window_control').execute({ action: 'focus', window: '7' }), /switched off/);
+  await assert.rejects(offTool('pointer_drag').execute({ from: [1, 2], to: [3, 4] }), /switched off/);
+}
 
 // Reading the desktop does not make the overlay click-through; moving or focusing a window does.
 {

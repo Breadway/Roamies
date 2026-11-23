@@ -6,7 +6,7 @@ Speaks the same command language as hands/main.swift and hands-win:
   ui <target> [controls] | locate-control <target> <id> | find-text <target> <text> [scroll]
   ocr-find <target> <text> [all] | refine '[[x,y,w,h],...]' [window:<id>]
   act <json> | tab <json> | wm <json> | pointer <json> | select <out>
-  trusted | guide | screencheck | selftest-type | selftest-drag
+  trusted | guide | screencheck | selftest-type | selftest-drag | selftest-safety
 One JSON object on stdout; live progress lines start with "@" on stderr.
 
 Windows come from Hyprland. Controls and text come from AT-SPI, with OCR of the window
@@ -266,6 +266,9 @@ def copy_active_url(win):
     press_combo("escape")
     time.sleep(0.12)
     u = (clip_text() or "").strip()
+    # Put back whatever they had on the clipboard before the copy.
+    if prev is not None and shutil.which("wl-copy"):
+        sh(["wl-copy", "--", prev])
     if u and u == prev:
         return ""
     return u
@@ -615,6 +618,96 @@ def front_client():
     for c in visible_clients():
         return c
     return None
+
+
+# Apps Roamies may point at but never click or type in. Typing into a terminal would run commands past every
+# check, and the others hold passwords or can change the whole desktop. Kept in step with hands-win and hands/main.swift.
+HANDS_OFF = {
+    # terminals and consoles
+    "kitty": "kitty", "alacritty": "Alacritty", "foot": "foot", "wezterm": "WezTerm", "wezterm-gui": "WezTerm",
+    "org.wezfurlong.wezterm": "WezTerm", "konsole": "Konsole", "org.kde.konsole": "Konsole",
+    "gnome-terminal": "GNOME Terminal", "gnome-terminal-server": "GNOME Terminal", "org.gnome.terminal": "GNOME Terminal",
+    "kgx": "GNOME Console", "org.gnome.console": "GNOME Console", "ptyxis": "Ptyxis", "org.gnome.ptyxis": "Ptyxis",
+    "xterm": "xterm", "uxterm": "xterm", "urxvt": "urxvt", "rxvt": "rxvt", "terminator": "Terminator",
+    "tilix": "Tilix", "terminology": "Terminology", "hyper": "Hyper", "tabby": "Tabby", "warp": "Warp",
+    "dev.warp.warp-stable": "Warp", "ghostty": "Ghostty", "com.mitchellh.ghostty": "Ghostty", "rio": "Rio",
+    "com.raphaelamorim.rio": "Rio", "contour": "Contour", "st": "st", "blackbox": "Black Box",
+    "com.raggesilver.blackbox": "Black Box",
+    # password managers and security prompts
+    "1password": "1Password", "onepassword": "1Password", "bitwarden": "Bitwarden",
+    "com.bitwarden.desktop": "Bitwarden", "keepass": "KeePass", "keepassxc": "KeePassXC",
+    "org.keepassxc.keepassxc": "KeePassXC", "seahorse": "Passwords and Keys",
+    "org.gnome.seahorse.application": "Passwords and Keys", "gcr-prompter": "Passwords and Keys",
+    "gnome-keyring": "Passwords and Keys", "kwallet": "KWallet", "kwalletmanager": "KWallet",
+    "org.kde.kwalletmanager": "KWallet", "enpass": "Enpass", "dashlane": "Dashlane",
+    "lastpass": "LastPass", "buttercup": "Buttercup", "polkit": "PolicyKit",
+    "polkit-gnome-authentication-agent-1": "PolicyKit",
+    # system settings, disks and package managers
+    "gnome-control-center": "Settings", "org.gnome.settings": "Settings", "systemsettings": "System Settings",
+    "systemsettings5": "System Settings", "systemsettings6": "System Settings",
+    "org.kde.systemsettings": "System Settings", "gparted": "GParted", "gnome-disks": "Disks",
+    "org.gnome.disks": "Disks", "blivet-gui": "Blivet", "gnome-software": "Software",
+    "org.gnome.software": "Software", "plasma-discover": "Discover", "org.kde.discover": "Discover",
+    "pamac-manager": "Pamac", "synaptic": "Synaptic", "octopi": "Octopi", "flatseal": "Flatseal",
+    "com.github.tchx84.flatseal": "Flatseal",
+    # editors that can run commands
+    "code": "Visual Studio Code", "code-oss": "Code", "codium": "VSCodium", "vscodium": "VSCodium",
+}
+
+
+def hands_off(win):
+    """The display name of the hands-off app a window belongs to, or None."""
+    app = str(win.get("app") or win.get("class") or "").strip().lower()
+    exe = str(win.get("exe") or exe_for(win.get("pid", 0))).strip().lower()
+    exe = os.path.basename(exe)
+    for key in (exe, app):
+        if key in HANDS_OFF:
+            return HANDS_OFF[key]
+    return None
+
+
+def window_at(x, y):
+    """The window under a screen point, if any."""
+    for c in visible_clients():
+        bx, by = c.get("at", [0, 0])
+        bw, bh = c.get("size", [0, 0])
+        if bx <= x <= bx + bw and by <= y <= by + bh:
+            return win_info(c, c.get("pid"))
+    return None
+
+
+# Clicks that delete, pay, send or sign out run only when the sidecar has asked the user ("confirmed").
+# Kept in step with hands-win/src/logic.rs and safety.mjs's RISKY_CLICK.
+RISKY = re.compile(
+    r"\b(delete|remove|erase|destroy|wipe|reset|deactivate|unsubscribe|pay|purchase|buy|checkout|check out|"
+    r"send|transfer|withdraw|uninstall|empty trash|discard|sign out|log out|logout|format|revoke|publish|"
+    r"cancel (my |your |the )?(subscription|plan|membership|account|order)|place (the |your )?order|"
+    r"confirm (payment|order|purchase|transfer)|close (my |your )?account|"
+    r"eliminar|borrar|pagar|comprar|enviar|cerrar sesion|cerrar sesión|supprimer|effacer|payer|acheter|envoyer|"
+    r"se deconnecter|se déconnecter|deconnexion|déconnexion|loschen|löschen|entfernen|"
+    r"bezahlen|kaufen|senden|abmelden|excluir|apagar|elimina|cancella|paga|acquista|invia|esci|"
+    r"verwijderen|betalen|kopen|verzenden|uitloggen|afmelden|padam|hapus|bayar|beli|hantar|kirim|log keluar|nyahlanggan|"
+    r"terminar sessao|terminar sessão)\b",
+    re.I,
+)
+RISKY_CJK = ("删除", "刪除", "移除", "清空", "支付", "付款", "购买", "購買", "发送", "發送", "退出登录", "登出", "注销",
+             "削除", "消去", "支払", "購入", "送信", "ログアウト", "退会", "삭제", "결제", "구매", "전송", "보내기", "로그아웃")
+
+
+def risky(s):
+    s = str(s or "")
+    return bool(RISKY.search(s)) or any(w in s for w in RISKY_CJK)
+
+
+SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.:@/-]{0,63}$")
+
+
+def safe_name(value, what):
+    """Workspace, monitor and special names go into a Hyprland expression: keep them to plain characters."""
+    v = str(value or "").strip()
+    if not SAFE_NAME.match(v):
+        fail(f"Invalid {what}: {v[:40]!r}")
+    return v
 
 
 def resolve(target):
@@ -992,8 +1085,13 @@ def type_text(text, xwayland=False):
     def via_clipboard():
         if not shutil.which("wl-copy"):
             return False
+        prev = clip_text()
         sh(["wl-copy", "--", text])
         press_combo("ctrl+v")
+        time.sleep(0.2)
+        # Typing must not leave the user's clipboard holding what was typed.
+        if prev is not None:
+            sh(["wl-copy", "--", prev])
         return True
 
     order = [via_ydotool, via_clipboard, via_wtype] if xwayland else [via_wtype, via_clipboard, via_ydotool]
@@ -1347,6 +1445,8 @@ def cmd_act(plan_json):
         w = win_info(c, c.get("pid")) if c else None
     if not w:
         fail(f"No matching window is open ({plan.get('app') or target or 'front'}).")
+    if blocked := hands_off(w):
+        fail(f"Blocked for safety: {blocked} holds a terminal or passwords, and I never type or click in it. Show the user where to click instead.")
     if not focus_window(w):
         fail(f"Couldn't focus {w.get('app')} — it may have closed, or another window took the keyboard. Ask the user to click its window once, then try again.")
     before_text = norm_text(ui_data(w))
@@ -1356,12 +1456,19 @@ def cmd_act(plan_json):
     for n, step in enumerate(plan.get("steps", []), 1):
         do = step.get("do", "")
         try:
+            # A step may have switched apps (alt+tab): check the front window before acting in it.
+            if do != "wait":
+                current = front_client()
+                if current and (blocked := hands_off(current)):
+                    fail(f"Step {n}: Blocked for safety: {blocked} came to the front, and I never type or click in it.")
             if do in ("click_at", "hover"):
                 x, y = step.get("x"), step.get("y")
                 if x is None or y is None:
                     raise ValueError("no point")
                 step_bounds([x - 4, y - 4, 8, 8], do)
                 if do == "click_at":
+                    if (spot := window_at(x, y)) and (blocked := hands_off(spot)):
+                        fail(f"Step {n}: Blocked for safety: that spot is on {blocked}, and I never click in it.")
                     bx, by, bw, bh = w["bounds"]
                     if not (bx - 2 <= x <= bx + bw + 2 and by - 2 <= y <= by + bh + 2):
                         fail(f"Step {n}: {x},{y} is outside the {w.get('app')} window ({w['bounds']}).")
@@ -1414,9 +1521,14 @@ def cmd_act(plan_json):
                     continue
                 if not c:
                     if text and is_zen(w):
+                        if risky(text) and step.get("confirmed") is not True:
+                            fail(f"Step {n}: Stopped before opening \"{text}\": it could delete, pay, send or sign out, and the user hasn't said yes to that.")
                         done.append(zen_activate_tab(w, None, None, text, None))
                         continue
                     raise ValueError(f"couldn't find {text or step.get('id')}")
+                label = c.get("label") or text or ""
+                if risky(label) and step.get("confirmed") is not True:
+                    fail(f"Step {n}: Stopped before clicking \"{label}\": it could delete, pay, send or sign out, and the user hasn't said yes to that.")
                 x, y = center(c["bounds"])
                 step_bounds(c["bounds"], do)
                 title_before = active_title(w)
@@ -1687,6 +1799,9 @@ def cmd_pointer(plan_json):
     a, b = p.get("from"), p.get("to")
     if not (isinstance(a, list) and len(a) == 2 and isinstance(b, list) and len(b) == 2):
         fail("from and to are required as [x, y] screen points")
+    for pt in (a, b):
+        if (spot := window_at(float(pt[0]), float(pt[1]))) and (blocked := hands_off(spot)):
+            fail(f"Blocked for safety: that drag is on {blocked}, and I never click or drag in it.")
     res = pointer_drag([float(a[0]), float(a[1])], [float(b[0]), float(b[1])], int(p.get("button") or 1), int(p.get("steps") or 24), float(p.get("delay") or 0.01))
     if res.get("ok") is False:
         fail(res.get("error") or "drag failed")
@@ -1743,6 +1858,61 @@ def cmd_selftest_drag():
     out({"ok": True, "window": w, "left": left, "right": right, "changed": {"left": d1, "pan": d2}, "files": files, "note": "; ".join(notes) or "left drag and right-drag pan both changed the screen"})
 
 
+LAUNCH_DIRS = ["/usr/share/applications", "/usr/local/share/applications", os.path.expanduser("~/.local/share/applications")]
+
+# Only cosmetic options can be set from here; anything that can add binds or run commands stays in the settings app.
+OPTION_WRITES = {
+    "general:gaps_in": "int", "general:gaps_out": "int", "general:border_size": "int",
+    "decoration:rounding": "int", "decoration:active_opacity": "float", "decoration:inactive_opacity": "float",
+    "decoration:dim_inactive": "bool", "animations:enabled": "bool", "misc:disable_hyprland_logo": "bool",
+    "misc:disable_splash_rendering": "bool", "cursor:inactive_timeout": "int",
+}
+
+
+def desktop_entries():
+    for d in LAUNCH_DIRS:
+        for path in glob.glob(os.path.join(d, "*.desktop")):
+            try:
+                text = open(path, encoding="utf-8", errors="replace").read()
+            except OSError:
+                continue
+            if re.search(r"^NoDisplay\s*=\s*true\s*$", text, re.I | re.M):
+                continue
+            name = re.search(r"^Name\s*=\s*(.+)$", text, re.M)
+            if name:
+                yield (os.path.basename(path)[:-8], name.group(1).strip(), path)
+
+
+def open_app(name):
+    """Open a web address, a file or a desktop app without a shell, so this cannot run arbitrary commands."""
+    n = str(name or "").strip()
+    if not n or "\n" in n or "\r" in n or "\0" in n:
+        fail("Invalid app or address")
+    if n.startswith(("http://", "https://", "mailto:")):
+        subprocess.Popen(["xdg-open", n], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        return f"Opened {n}"
+    path = os.path.expanduser(n)
+    if os.path.exists(path):
+        subprocess.Popen(["xdg-open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        return f"Opened {n}"
+    if re.search(r"[;&|`$<>]", n):
+        fail("That is a command, not an app. Ask the user to run it, or use run_command.")
+    low = n.lower()
+    entries = list(desktop_entries())
+    hit = next((e for e in entries if e[0].lower() == low or e[1].lower() == low), None)
+    if not hit:
+        hit = next((e for e in entries if low in e[1].lower()), None)
+    if not hit:
+        fail(f"There's no app called {n!r}.")
+    if shutil.which("gio"):
+        subprocess.Popen(["gio", "launch", hit[2]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    elif shutil.which("gtk-launch"):
+        subprocess.Popen(["gtk-launch", hit[0]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    else:
+        fail("This computer has neither gio nor gtk-launch to open apps.")
+    return f"Opened {hit[1]}"
+
+
 def cmd_wm(plan_json):
     try:
         p = json.loads(plan_json)
@@ -1759,16 +1929,14 @@ def cmd_wm(plan_json):
         focus_window(w)
         out({"ok": True, "done": f"Focused {w.get('app')} — {w.get('title', '')}"})
     if action == "workspace":
-        ws = str(p.get("workspace") or "")
-        if not ws:
-            fail("workspace is required")
+        ws = safe_name(p.get("workspace"), "workspace")
         if not dispatch(f"hl.dsp.focus({{ workspace = '{ws}' }})"):
             fail(f"Couldn't switch to workspace {ws}.")
         out({"ok": True, "done": f"Switched to workspace {ws}"})
     if action == "move":
-        ws = str(p.get("workspace") or "")
-        if not w or not ws:
-            fail("window and workspace are required")
+        ws = safe_name(p.get("workspace"), "workspace")
+        if not w:
+            fail("window is required")
         if not dispatch(f"hl.dsp.window.move({{ workspace = '{ws}', window = 'address:{w.get('id')}' }})"):
             fail(f"Couldn't move {w.get('app')} to workspace {ws}.")
         out({"ok": True, "done": f"Moved {w.get('app')} to workspace {ws}"})
@@ -1783,6 +1951,8 @@ def cmd_wm(plan_json):
         if not focus_window(w):
             fail(f"Couldn't focus {w.get('app')} to change fullscreen.")
         mode = p.get("mode")
+        if mode and mode not in ("fullscreen", "maximized", "toggle"):
+            fail("mode must be fullscreen, maximized or toggle")
         expr = "hl.dsp.window.fullscreen({ action = 'toggle'%s })" % (f", mode = '{mode}'" if mode else "")
         dispatch(expr)
         out({"ok": True, "done": f"Toggled fullscreen for {w.get('app')}"})
@@ -1815,6 +1985,8 @@ def cmd_wm(plan_json):
                 dispatch(f"hl.dsp.window.swap({{ target = hl.get_window('address:{o.get('id')}') }})")
                 out({"ok": True, "done": f"Swapped {w.get('app')} with {o.get('app')} — {o.get('title', '')}"})
             direction = p.get("direction") or "right"
+            if direction not in ("up", "down", "left", "right"):
+                fail("direction must be up, down, left or right")
             dispatch(f"hl.dsp.window.swap({{ direction = '{direction}' }})")
             out({"ok": True, "done": f"Swapped {w.get('app')} {direction}"})
         if action == "pseudo":
@@ -1824,31 +1996,27 @@ def cmd_wm(plan_json):
             dispatch("hl.dsp.window.bring_to_top()")
             out({"ok": True, "done": f"Brought {w.get('app')} to the top"})
     if action in ("special", "toggle_special"):
-        name = p.get("name") or p.get("workspace")
-        if not name:
-            fail("name is required")
+        name = safe_name(p.get("name") or p.get("workspace"), "special workspace")
         dispatch(f"hl.dsp.workspace.toggle_special('{name}')")
         out({"ok": True, "done": f"Toggled the special workspace {name}"})
     if action == "move_to_special":
-        name = p.get("name") or p.get("workspace")
-        if not w or not name:
-            fail("window and name are required")
+        name = safe_name(p.get("name") or p.get("workspace"), "special workspace")
+        if not w:
+            fail("window is required")
         dispatch(f"hl.dsp.window.move({{ workspace = 'special:{name}', window = 'address:{w.get('id')}' }})")
         out({"ok": True, "done": f"Moved {w.get('app')} to the special workspace {name}"})
     if action == "focus_direction":
         direction = p.get("direction") or "right"
+        if direction not in ("up", "down", "left", "right"):
+            fail("direction must be up, down, left or right")
         dispatch(f"hl.dsp.focus({{ direction = '{direction}' }})")
         out({"ok": True, "done": f"Focused {direction}"})
     if action == "focus_monitor":
-        monitor = p.get("monitor") or p.get("name")
-        if not monitor:
-            fail("monitor is required")
+        monitor = safe_name(p.get("monitor") or p.get("name"), "monitor")
         dispatch(f"hl.dsp.focus({{ monitor = '{monitor}' }})")
         out({"ok": True, "done": f"Focused monitor {monitor}"})
     if action == "workspace_to_monitor":
-        monitor = p.get("monitor") or p.get("name")
-        if not monitor:
-            fail("monitor is required")
+        monitor = safe_name(p.get("monitor") or p.get("name"), "monitor")
         dispatch(f"hl.dsp.workspace.move({{ monitor = '{monitor}' }})")
         out({"ok": True, "done": f"Moved this workspace to monitor {monitor}"})
     if action in ("last", "urgent"):
@@ -1871,16 +2039,12 @@ def cmd_wm(plan_json):
             lines.append(f"{ws.get('id')}: {ws.get('name')} — {ws.get('windows')} window(s)" + (" (visible)" if ws.get("visible") else "") + (f" on {ws.get('monitor')}" if ws.get("monitor") else ""))
         out({"ok": True, "text": "\n".join(lines) or "No workspaces."})
     if action == "rename_workspace":
-        name = p.get("name") or p.get("workspace")
-        if not name:
-            fail("name is required")
+        name = safe_name(p.get("name") or p.get("workspace"), "workspace")
         dispatch(f"hl.dsp.workspace.rename('{name}')")
         out({"ok": True, "done": f"Renamed this workspace to {name}"})
     if action == "swap_monitors":
-        m1 = p.get("monitor") or p.get("monitor1")
-        m2 = p.get("monitor2")
-        if not m1 or not m2:
-            fail("monitor and monitor2 are required")
+        m1 = safe_name(p.get("monitor") or p.get("monitor1"), "monitor")
+        m2 = safe_name(p.get("monitor2"), "monitor")
         dispatch(f"hl.dsp.workspace.swap_monitors({{ monitor1 = '{m1}', monitor2 = '{m2}' }})")
         out({"ok": True, "done": f"Swapped the workspaces on {m1} and {m2}"})
     if action in ("group_toggle", "group_next", "group_prev"):
@@ -1888,31 +2052,59 @@ def cmd_wm(plan_json):
         dispatch(expr)
         out({"ok": True, "done": {"group_toggle": "Toggled the window group", "group_next": "Focused the next group", "group_prev": "Focused the previous group"}[action]})
     if action == "dpms":
-        state = p.get("mode") or p.get("value") or "toggle"
-        monitor = p.get("monitor")
+        state = str(p.get("mode") or p.get("value") or "toggle").lower()
+        if state not in ("on", "off", "toggle"):
+            fail("mode must be on, off or toggle")
+        monitor = safe_name(p.get("monitor"), "monitor") if p.get("monitor") else None
         expr = f"hl.dsp.dpms({{ action = '{state}'" + (f", monitor = '{monitor}'" if monitor else "") + " })"
         dispatch(expr)
         out({"ok": True, "done": f"Turned displays {state}" + (f" on {monitor}" if monitor else "")})
     if action in ("option", "getoption", "setoption"):
-        key = p.get("key") or p.get("name")
+        key = str(p.get("key") or p.get("name") or "")
         if not key:
             fail("key is required")
         value = p.get("value")
         if value is None or action == "getoption":
-            r = sh(["hyprctl", "getoption", str(key)])
+            r = sh(["hyprctl", "getoption", key])
             out({"ok": r.returncode == 0, "text": r.stdout.strip() or r.stderr.strip() or f"No option called {key}."})
-        r = sh(["hyprctl", "keyword", str(key), str(value)])
+        kind = OPTION_WRITES.get(key)
+        if not kind:
+            fail(f"{key} can't be changed from here; use the Hyprland settings or its config.")
+        if kind == "int":
+            try:
+                n = int(value)
+            except Exception:
+                fail(f"{key} needs a whole number.")
+            if not 0 <= n <= 4096:
+                fail(f"{key} is out of range.")
+            value = str(n)
+        elif kind == "float":
+            try:
+                n = float(value)
+            except Exception:
+                fail(f"{key} needs a number between 0 and 1.")
+            if not 0 <= n <= 1:
+                fail(f"{key} is out of range.")
+            value = str(n)
+        else:
+            v = str(value).strip().lower()
+            if v not in ("true", "false", "1", "0", "yes", "no", "on", "off"):
+                fail(f"{key} needs true or false.")
+            value = "true" if v in ("true", "1", "yes", "on") else "false"
+        r = sh(["hyprctl", "keyword", key, value])
         out({"ok": r.returncode == 0, "done": f"Set {key} to {value}" if r.returncode == 0 else f"Couldn't set {key}: {r.stderr.strip() or r.stdout.strip()}"})
     if action == "open":
-        app = p.get("app") or p.get("command") or target
+        app = p.get("app") or target
         if not app:
-            fail("app or command is required")
-        subprocess.Popen(["setsid", "sh", "-c", str(app)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        out({"ok": True, "done": f"Opened {app}"})
+            fail("app is required")
+        out({"ok": True, "done": open_app(app)})
     if action == "drag":
         a, b = p.get("from"), p.get("to")
         if not (isinstance(a, list) and isinstance(b, list) and len(a) == 2 and len(b) == 2):
             fail("from and to are required")
+        for pt in (a, b):
+            if (spot := window_at(float(pt[0]), float(pt[1]))) and (blocked := hands_off(spot)):
+                fail(f"Blocked for safety: that drag is on {blocked}, and I never click or drag in it.")
         cursor_move(a[0], a[1])
         time.sleep(0.08)
         ydotool("click", "0x40")
@@ -1929,13 +2121,24 @@ def cmd_wm(plan_json):
         x, y = p.get("x"), p.get("y")
         if x is None or y is None:
             fail("x and y are required")
+        if (spot := window_at(float(x), float(y))) and (blocked := hands_off(spot)):
+            fail(f"Blocked for safety: that spot is on {blocked}, and I never click in it.")
         click_at(float(x), float(y), int(p.get("button") or 1))
         out({"ok": True, "done": f"Clicked {x},{y}"})
     if action == "scroll":
         x, y = p.get("x"), p.get("y")
         amount = int(p.get("amount") or 3)
         if x is not None and y is not None:
+            if (spot := window_at(float(x), float(y))) and (blocked := hands_off(spot)):
+                fail(f"Blocked for safety: that spot is on {blocked}, and I never scroll in it.")
             cursor_move(float(x), float(y))
+        else:
+            pos = cursor_pos()
+            if not pos:
+                fail("Couldn't tell where the pointer is; give x and y.")
+            spot = window_at(float(pos[0]), float(pos[1]))
+            if spot and (blocked := hands_off(spot)):
+                fail(f"Blocked for safety: the pointer is on {blocked}, and I never scroll in it.")
         button = "4" if (p.get("direction") or "down") == "up" or amount > 0 and (p.get("direction") == "up") else "5"
         if p.get("direction") == "up":
             button = "4"
@@ -1944,6 +2147,21 @@ def cmd_wm(plan_json):
             time.sleep(0.03)
         out({"ok": True, "done": "Scrolled"})
     fail(f"unknown window action {action}")
+
+
+def cmd_selftest_safety():
+    checks = []
+
+    def check(name, ok):
+        checks.append({"name": name, "ok": bool(ok)})
+
+    check("terminals are hands-off", hands_off({"app": "kitty"}) == "kitty" and hands_off({"app": "Alacritty"}) == "Alacritty")
+    check("password managers are hands-off", hands_off({"app": "KeePassXC"}) == "KeePassXC")
+    check("everyday apps are not", hands_off({"app": "zen"}) is None and hands_off({"app": "notepad"}) is None)
+    check("risky clicks", risky("Delete account") and risky("Place your order") and risky("削除する") and not risky("Save"))
+    check("unsafe names refused", SAFE_NAME.match("1; rm -rf /") is None and SAFE_NAME.match("dev 2") is not None)
+    check("only cosmetic options can be set", "general:gaps_in" in OPTION_WRITES and "input:kb_layout" not in OPTION_WRITES and "binds:workspace_back_and_forth" not in OPTION_WRITES)
+    out({"ok": all(c["ok"] for c in checks), "checks": checks})
 
 
 def main():
@@ -1982,6 +2200,8 @@ def main():
         w = resolve(t)
         if not w:
             fail(f"No matching window is open ({plan.get('app') or t}).")
+        if blocked := hands_off(w):
+            fail(f"Blocked for safety: {blocked} holds a terminal or passwords, and I never switch its tabs or type in it.")
         if not focus_window(w):
             fail(f"Couldn't focus {w.get('app')}.")
         out({"ok": True, "done": zen_activate_tab(w, plan.get("workspace"), plan.get("index"), plan.get("text"), plan.get("url")), "window": w})
@@ -1993,6 +2213,8 @@ def main():
         cmd_pointer(args[1])
     if cmd == "selftest-type":
         cmd_selftest_type()
+    if cmd == "selftest-safety":
+        cmd_selftest_safety()
     if cmd == "selftest-drag":
         cmd_selftest_drag()
     fail(f"unknown command {cmd}")

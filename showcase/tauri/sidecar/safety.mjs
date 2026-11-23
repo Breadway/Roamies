@@ -367,6 +367,9 @@ export function classifyCommand(cmd, home, { exists, cwd: start = null, own = nu
   const s0 = String(cmd ?? '').trim();
   const s = unrollLoop(s0) ?? s0;
   if (!s) return verdict(BLOCK, 'That command is empty.');
+  // hyprctl can rewrite the compositor's binds and run commands. Window changes belong to the window tools, which
+  // check the target and keep the user in the loop.
+  if (/(^|[\s;&|()])(?:\/(?:usr\/)?bin\/)?hyprctl(?=$|[\s;&|()])/.test(s)) return verdict(BLOCK, 'Use the window tools for windows and workspaces; hyprctl would skip their checks.');
   if (/:\s*\(\s*\)\s*\{.*:\s*\|\s*:.*\}/.test(s)) return verdict(BLOCK, 'That is a fork bomb.');
   if (/\b(curl|wget|fetch)\b[^|;&]*\|\s*(sudo\s+)?(ba|z|da|k|fi)?sh\b/.test(s) || /\bbase64\s+(-d|--decode|-D)\b[^|]*\|\s*(ba|z)?sh\b/.test(s)) return verdict(BLOCK, 'Downloading a script and running it straight away skips every check.');
   const parts = splitCommand(s);

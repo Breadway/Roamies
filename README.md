@@ -95,10 +95,10 @@ quizzes you answer with a click.
 | Circle while talking   | Yes                        | Yes                         | No                                 |
 | Spoken replies         | Fish Audio or Gemini key   | Fish Audio or Gemini key    | Fish Audio or Gemini key           |
 | Memory and reminders   | Yes                        | Yes                         | Yes                                |
-| Read windows and point | Yes                        | Yes                         | Yes, with the hands helper         |
+| Read windows and point | Yes                        | Yes                         | Yes, with the helper (Hyprland)    |
 | Cards and diagrams     | Yes                        | Yes                         | Yes                                |
-| Click and type in apps | Yes                        | Yes                         | Yes, with the hands helper         |
-| Ask about an area      | Yes (⌃⌥A)                  | Yes (Ctrl+Shift+A)          | Yes (Ctrl+Alt+A), with the helper  |
+| Click and type in apps | Yes                        | Yes                         | Yes, with the helper (Hyprland)    |
+| Ask about an area      | Yes (⌃⌥A)                  | Yes (Ctrl+Shift+A)          | Yes (Ctrl+Alt+A), Hyprland only    |
 | Show or hide           | ⌃⌥S                        | Ctrl+Shift+S                | Ctrl+Alt+S, or a key you bind\*    |
 | Talk shortcut          | Hold ⌃⌥                    | Hold Ctrl+Alt               | Hold Ctrl+Alt, or a key you bind\* |
 | Type shortcut          | Tap ⌥⌘                     | Tap Ctrl+Shift              | Tap Ctrl+Shift, or a key you bind\* |

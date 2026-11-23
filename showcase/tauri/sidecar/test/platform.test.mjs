@@ -46,9 +46,10 @@ assert.ok(hasWakeWord('darwin') && hasWakeWord('win32') && hasWakeWord('linux') 
 assert.ok(!hasHands('linux', '') && !canSnap('linux', '') && !canCircle('linux'));
 
 // Ask About an Area needs the helper's area selection: macOS, and Windows or Linux with the helper there.
-assert.ok(canSnap('darwin', '') && canSnap('win32', 'C:\\Roamies\\roamies-hands.exe') && canSnap('linux', '/x/roamies-hands'));
-assert.ok(!canSnap('win32', '') && !canSnap('linux', ''));
+assert.ok(canSnap('darwin', '') && canSnap('win32', 'C:\\Roamies\\roamies-hands.exe') && canSnap('linux', '/x/roamies-hands', { HYPRLAND_INSTANCE_SIGNATURE: 'x' }));
+assert.ok(!canSnap('win32', '') && !canSnap('linux', '') && !canSnap('linux', '/x/roamies-hands', {}));
 assert.ok(hasHands('darwin', '') && hasHands('win32', 'x') && !hasHands('win32', ''));
+assert.ok(hasHands('linux', 'x', { HYPRLAND_INSTANCE_SIGNATURE: 'x' }) && !hasHands('linux', 'x', {}), 'Linux needs Hyprland for the helper');
 assert.ok(canCircle('darwin') && canCircle('win32') && !canCircle('linux'));
 
 // With the helper there, its tools are offered on any system (Windows has one now).
@@ -57,7 +58,7 @@ const names = execFileSync(process.execPath, ['--input-type=module', '-e', `
   const { createTools } = await import(${JSON.stringify(tools)});
   const noop = async () => {};
   const { tools } = createTools({ allowActions: () => false, ui: () => {}, ask: noop, openUrl: noop, onCommitments: noop, showList: noop, fmtWhen: String, commitmentsText: () => '', userName: 'T' });
-  console.log(tools.map((t) => t.name).join(','));`], { env: { ...process.env, ROAMIES_HANDS: 'fake-hands.mjs' }, encoding: 'utf8' }).trim().split(',');
+  console.log(tools.map((t) => t.name).join(','));`], { env: { ...process.env, ROAMIES_HANDS: 'fake-hands.mjs', HYPRLAND_INSTANCE_SIGNATURE: 'test' }, encoding: 'utf8' }).trim().split(',');
 for (const n of ['list_windows', 'read_window', 'act_in_app']) assert.ok(names.includes(n), `${n} is offered with the helper`);
 // The microphone: each reason the voice helper gives gets its own advice, not "I can't find a microphone".
 assert.match(micTrouble('darwin'), /^I can't find a microphone\. Plug one in and try again\.$/, 'the Mac helper sends no reason');
