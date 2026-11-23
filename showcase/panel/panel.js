@@ -184,7 +184,7 @@
     return new Date(at).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
   };
   const REDUCED = matchMedia('(prefers-reduced-motion: reduce)');
-  const tokens = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+  const tokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
   // Why pick each voice model: a line under the choice, and more in its tooltip with the cost.
   const WHY = { 'drama-3': 'More emotion. Slower, and costs more.', 's2.1-pro': 'Natural pace. Less emotion, costs less.' };
   const WHY_LONG = {
@@ -369,7 +369,34 @@
           state.busy ? btn('Stop', () => act('stop'), { k: 'stop' }) : btn('New chat', () => act('new'), { k: 'new', disabled: !state.canNew, aria: 'Start a new conversation' }),
           mac ? null : btn(`Show ${state.name}`, () => act('show', true), { k: 'show' }))),
       recentList(),
+      usageGroup(),
     ].flat();
+  }
+  // Tokens used over time: today's input, output and cache hits, the last week as bars, and the 7- and 30-day
+  // totals. From usage.jsonl in the data folder, which only ever holds counts and timings.
+  function usageGroup() {
+    const u = state.usage ?? state.usageTotals?.month;
+    if (!u || (!u.requests && !u.tokens)) return null;
+    const card = (name, value) => el('div', { className: 'usage-card' },
+      el('span', { className: 'k', textContent: name }),
+      el('span', { className: 'v', textContent: value }));
+    const days = (state.usageHistory ?? []).slice(-7);
+    const max = Math.max(1, ...days.map((d) => d.tokens));
+    const bar = (d) => { const b = el('span', { className: 'usage-bar' }); b.style.width = `${Math.round((d.tokens / max) * 100)}%`; return b; };
+    const week = state.usageTotals?.week, month = state.usageTotals?.month;
+    const totals = week && month ? `7 days ${tokens(week.tokens)} · 30 days ${tokens(month.tokens)}` : state.usage ? 'Today' : '30 days';
+    return el('div', { className: 'group usage-group' },
+      el('div', { className: 'ghead' }, el('h2', { textContent: 'Tokens' }), el('p', { className: 'why', textContent: totals })),
+      el('div', { className: 'usage-cards' },
+        card('Input', tokens(u.input)),
+        card('Output', tokens(u.out)),
+        card('Cache hits', tokens(u.cacheRead)),
+        card('Requests', String(u.requests))),
+      days.some((d) => d.tokens) ? el('ul', { className: 'usage-list', 'aria-label': 'Tokens used each day, last 7 days' },
+        days.map((d) => el('li', { className: 'usage-day' },
+          el('span', { className: 'n', textContent: new Date(`${d.day}T00:00:00`).toLocaleDateString(undefined, { weekday: 'short' }) }),
+          el('span', { className: 'usage-track' }, bar(d)),
+          el('span', { className: 'n', textContent: tokens(d.tokens) })))) : null);
   }
   function recentList() {
     const { box, nav } = paged('recent', state.recent, (r) => el('li', { className: `item ${r.kind}` },
@@ -378,7 +405,7 @@
       el('span', { className: 'meta', textContent: ago(r.at) })), { label: 'Recent' });
     return [
       el('div', { className: 'group paged' }, el('div', { className: 'ghead' }, el('h2', { textContent: 'Recent' })), box),
-      foot(state.usage ? el('p', { className: 'usage', textContent: `Today: ${state.usage.requests} request${state.usage.requests === 1 ? '' : 's'} · ${tokens(state.usage.tokens)} tokens` }) : null, nav),
+      foot(null, nav),
     ];
   }
 
@@ -962,13 +989,23 @@
         el('span', { id: `lbl-mcp-${x.name}` }, el('span', { className: 'acct-name' }, x.name, x.state === 'connected' ? el('span', { className: 'led on', role: 'img', 'aria-label': 'Connected', 'data-tip': 'Connected' }) : null),
           el('small', { className: bad ? 'late' : '', textContent: (CONN_STATE[x.state] ?? CONN_STATE.idle)(x), title: x.where })),
         el('span', { className: 'row-btns' },
+          el('span', { className: 'px field select' },
+            el('select', { 'aria-label': `Approval for ${x.name}`, 'data-k': `mcp:trust:${x.name}`,
+              on: { change: (e) => act(`mcp:trust:${x.name}:${e.target.value}`) } },
+              el('option', { value: 'ask', textContent: 'Ask every time', selected: x.trust !== 'always' }),
+              el('option', { value: 'always', textContent: 'Always allow', selected: x.trust === 'always' }))),
           x.state === 'needs-login' ? link('Sign in', () => act(`mcp:login:${x.name}`, true), { k: `mcp:login:${x.name}`, aria: `Sign in to ${x.name}` }) : null,
           armed('Remove', 'Confirm', `mcp:remove:${x.name}`, `mcp:remove:${x.name}`, `Remove the ${x.name} connection and its keys`),
           el('button', { className: 'px switch', type: 'button', role: 'switch', 'aria-checked': String(!!x.enabled), 'aria-labelledby': `lbl-mcp-${x.name}`, 'data-k': `mcp:sw:${x.name}`,
             on: { click: () => act(`mcp:${x.enabled ? 'off' : 'on'}:${x.name}`) } }))));
     }, { label: 'Connections', empty: 'No apps connected yet.' });
     return {
-      body: [group(null, 'Apps like Linear and Notion I can use for you.', null), el('div', { className: 'group paged' }, box)],
+      body: [
+        group(null, 'Apps like Linear and Notion I can use for you.', null),
+        group('Approvals', 'Ask every time, or let a connection run its tools without a bubble.', null,
+          toggle('Always allow connection tools', 'Overrides the per-connection choice.', !!state.trustAll, () => act('mcp:trustall'), 'trustall')),
+        el('div', { className: 'group paged' }, box),
+      ],
       foot: foot(btn('Connect an app', () => act('askconnect', true), { k: 'askconnect' }), nav),
     };
   }
