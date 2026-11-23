@@ -7,7 +7,11 @@ export const dayKey = (t) => {
   const d = new Date(t);
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 };
-const empty = () => ({ requests: 0, tokens: 0, input: 0, cacheRead: 0, cacheWrite: 0, out: 0 });
+// Off-peak DeepSeek V4.1 Flash list rates, USD per 1M tokens: $0.15 input (cache miss), $0.003 cache hit,
+// $0.60 output. Peak hours (01:00-04:00 and 06:00-10:00 UTC, weekdays) cost twice this; the panel labels it off-peak.
+const FLASH = { input: 0.15, cacheRead: 0.003, output: 0.6 };
+const costOf = (rec) => ((rec.in ?? 0) * FLASH.input + (rec.cacheRead ?? 0) * FLASH.cacheRead + (rec.out ?? 0) * FLASH.output) / 1_000_000;
+const empty = () => ({ requests: 0, tokens: 0, input: 0, cacheRead: 0, cacheWrite: 0, out: 0, cost: 0 });
 
 export function createUsageLog(file, { now = Date.now } = {}) {
   const byDay = new Map();
@@ -22,6 +26,7 @@ export function createUsageLog(file, { now = Date.now } = {}) {
     u.cacheRead += rec.cacheRead ?? 0;
     u.cacheWrite += rec.cacheWrite ?? 0;
     u.out += rec.out ?? 0;
+    u.cost += costOf(rec);
     // The same total the app has always shown: what was sent, written to cache and answered.
     u.tokens = u.input + u.cacheWrite + u.out;
     return u;
