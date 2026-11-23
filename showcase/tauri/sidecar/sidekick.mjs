@@ -10,6 +10,8 @@ import { ClaudeCodeAgent, claudeCodeInstaller, closeSpare } from './claudecode.m
 import { SAFE, checkDrawAction, checkLink, checkMcpCall, checkOpen, checkRead, checkWrite, isYes, redactArgs } from './safety.mjs';
 import { agentsRoot, createAgents, holdAfterLaunch, newsDesk, wantsAgent } from './agents.mjs';
 import { agentEvents, stallWatch } from './agentstream.mjs';
+import { createOpencodeBridge } from './opencode-bridge.mjs';
+import { createBreadboardChat } from './breadboard-chat.mjs';
 import { CATALOG_PROVIDERS, createCatalogs } from './catalogs.mjs';
 import {
   AUTH_PROVIDERS, AuthStorage, CHATGPT_USAGE_URL, OPENAI_CHATGPT_KEY, apiKeyStorageKeys, claudeCodeEnv, dualAuthProvider, ensureClaudeCodeBinary, getAuthStorageKeys, getContextWindow, getDefaultModel, getModel,
@@ -82,7 +84,10 @@ let intro = null; // the get-to-know-you chat, while it's on
 const guideVoices = new Set();
 // 0 to 100: my voice and sounds (#136). A missing or broken value is full volume, never silence.
 const volumeNow = () => (Number.isFinite(Number(config.volume)) ? Math.max(0, Math.min(100, Math.round(Number(config.volume)))) : 100);
+let breadboardChat = null;
 const ui = (msg) => {
+  try { breadboardChat?.observe(msg); } catch {
+  }
   if (msg.kind === 'speech') {
     if (msg.stop) { send({ type: 'onboard', msg }); return send({ type: 'ui', msg }); }
     if (guideVoices.has(msg.id)) { if (msg.end) guideVoices.delete(msg.id); return send({ type: 'onboard', msg }); }
@@ -690,6 +695,58 @@ const agents = createAgents({
   },
 });
 tools.push(...agents.tools);
+// The native background agents stay in agents.mjs, but every call path goes through real opencode sessions now.
+const opencode = createOpencodeBridge({ ui, enqueue, say, userName, log: (kind, data) => { try { logLine(kind, data); } catch {} } });
+
+// Breadboard chat: DMs and @pings become normal turns, and the answer is posted back to the room.
+breadboardChat = createBreadboardChat({
+  enqueue, ui, agent: 'jarvis',
+  log: (kind, data) => { try { logLine(kind, data); } catch {} },
+});
+breadboardChat.start().catch(() => {});
+{
+  const byName = (name) => tools.find((t) => t.name === name);
+  const sendAgent = byName('send_agent');
+  if (sendAgent) {
+    sendAgent.description = `Start a background opencode session: a real session breadway can watch in opencode. It runs with --auto (your opencode config still denies what it denies) in any folder, home by default, on Hermes (default) or Hestia. title: 2 to 5 words. brief: complete, since it starts with none of this conversation. folder: where to run. host: hermes or hestia. agent/model: only when breadway named them. It shows in the corner; write nothing more, the launch is your reply.`;
+    sendAgent.parameters = z.object({
+      title: z.string().min(1).max(60),
+      brief: z.string().min(1).max(8000),
+      folder: z.string().max(500).optional(),
+      host: z.enum(['hermes', 'hestia']).optional(),
+      agent: z.string().max(40).optional(),
+      model: z.object({ providerID: z.string(), id: z.string(), variant: z.string().optional() }).optional(),
+    });
+    sendAgent.execute = async (args) => {
+      const s = await opencode.create(args);
+      return `Started opencode session ${s.id} "${s.title}" in ${s.folder} on ${s.host}. It shows in the corner of the screen. Watch it with opencode -s ${s.id}. Write nothing more and call no other tools: the launch is your reply.`;
+    };
+  }
+  const tellAgent = byName('tell_agent');
+  if (tellAgent) {
+    tellAgent.description = 'Give an opencode session more instructions: its next task, or the answer to its question. Use any session id from list_sessions, including one started by hand.';
+    tellAgent.parameters = z.object({ id: z.string().max(40), message: z.string().min(1).max(4000), host: z.enum(['hermes', 'hestia']).optional() });
+    tellAgent.execute = async ({ id, message, host }) => { await opencode.send(id, message, host); return `Sent to ${id}.`; };
+  }
+  const stopAgent = byName('stop_agent');
+  if (stopAgent) {
+    stopAgent.description = 'Stop an opencode session. What it made so far stays in its folder.';
+    stopAgent.parameters = z.object({ id: z.string().max(40), host: z.enum(['hermes', 'hestia']).optional() });
+    stopAgent.execute = async ({ id, host }) => { await opencode.stop(id, host); return `Stopping ${id}.`; };
+  }
+  const answerAgent = byName('answer_agent');
+  if (answerAgent) {
+    answerAgent.description = 'Answer an opencode session, when breadway tells you what to say. Sessions run with --auto, so this is only for a direct reply.';
+    answerAgent.parameters = z.object({ id: z.string().max(40), allow: z.boolean(), host: z.enum(['hermes', 'hestia']).optional() });
+    answerAgent.execute = async ({ id, allow, host }) => { await opencode.send(id, allow ? 'Yes, go ahead.' : "No, don't do that.", host); return `Answered ${id}.`; };
+  }
+  const reportAgent = byName('agent_report');
+  if (reportAgent) {
+    reportAgent.description = 'What an opencode session last said, its status, folder and watch command. Use any session id from list_sessions.';
+    reportAgent.parameters = z.object({ id: z.string().max(40), host: z.enum(['hermes', 'hestia']).optional(), full: z.boolean().optional() });
+    reportAgent.execute = async ({ id, host, full }) => opencode.result(id, { host, full });
+  }
+}
 // Connections (mcp.mjs): apps and services through their MCP servers, added only by asking the Roamie. Connected the
 // first time one is needed (or a moment after launch, when some are saved).
 const mcp = createMcp({ secrets, log: (kind, data) => logLine(kind, data) });
@@ -852,11 +909,11 @@ The <live-state> block at the top of the newest message is the current state (se
 // Made once per request. `context` (the latest user message) picks which facts are relevant. → { turn, memory }
 let lastFactIds = [];
 let frontNow = ''; // set just before each request (whereNow)
-const crewLine = () => { const t = crewText(crewNow(), (sp) => modelName(sp.model), config.delegate); return t ? `${t}\n` : ''; };
+const crewLine = () => ''; // native subagents are retired in favour of opencode sessions
 const livePrompt = (context = '') => {
   const facts = pickFacts(context, 40), total = listFacts().length;
   lastFactIds = facts.map((f) => f.id);
-  const open = commitmentsText(), done = doneTodayText(), working = agents.liveText(), scheduled = jobsText(fmtWhen), learned = skillIndex(), linked = mcp.liveText();
+  const open = commitmentsText(), done = doneTodayText(), working = opencode.liveText(), scheduled = jobsText(fmtWhen), learned = skillIndex(), linked = mcp.liveText();
   const turn = `Live state (current as of this moment):
 ${frontNow ? `${frontNow}\n` : ''}${lookLine(session?.looks, config.look ?? 'classic', nameOfLook, userName)}${inkLine()}${focusLine()}${crewLine()}${linked ? `- Connections (connection_tools shows a server's tools, use_connection calls one):\n${linked}\n` : ''}- Editing files, running commands and controlling other apps: ${config.allowActions ? 'ALLOWED' : `switched OFF (tell the user to turn on "Allow File Edits & Commands" on the General page in ${PANEL} if they want it)`}.${config.allowActions && config.skipAllow ? ' Allow prompts are skipped: confirmations go ahead automatically, so be extra careful.' : ''}
 ${VOICE_OK ? `- Voice: ${!config.voice ? 'off' : voiceReady() ? `on; ${HOTKEYS_OK ? `${userName} holds ${talkWords()} to talk` : `${userName} presses the key they bound to ${BIND.talk} to start talking and again to send (a pause sends too)`}${config.autoListen ? (config.listenEvery ? `. Auto-listen is on for every reply: after each spoken reply the mic opens by itself for ${listenSecs()} seconds, so they can just keep talking` : '. Auto-listen is on: when your reply to a spoken question ends with a question, the mic opens by itself for their answer') : ''}${!WAKE_OK ? '. There is no wake word on this computer: to talk they use the talk keys' : ''}${WAKE_OK && config.wakeWord ? `. Wake word is on: ${userName} can also say "Hey ${wakeName(config)}" to start talking hands-free, and what they say right after it is the request (a request that still starts with "Hey ${wakeName(config)}" is them waking you, not calling you by another name: never correct it)${config.wakeName ? ` (they chose "${config.wakeName}" as the wake word; your own name is unchanged)` : ''}` : ''}` : `on, but the speech model isn't downloaded yet (${voiceModel.status === 'downloading' ? 'downloading now' : `the Listening page in ${PANEL}`})`}.` : ''}
@@ -1464,7 +1521,7 @@ const autoListenOn = () => VOICE_OK && !!config.voice && !!config.autoListen && 
 let voiceBusy = false, saidPending = false, saidCap = null;
 const desk = newsDesk({
   gates: () => ({ busy, queued, barOpen: !!barAsk, voice: voiceBusy, saidPending, autoListen: !!autoTurn, asking: pending.size > 0, onboarding, intro: !!intro, loggingIn: !!loggingIn }),
-  news: () => agents.news(), markTold: (ids) => agents.markTold(ids), userName,
+  news: () => opencode.news(), markTold: (ids) => opencode.markTold(ids), userName,
   enqueue: (text, ids) => enqueue(text, { news: ids }), say: (text, mood) => say(text, mood),
   signedIn: () => signedIn.size > 0 && [...signedIn.values()].some(Boolean),
 });
@@ -1472,6 +1529,8 @@ const stir = desk.stir;
 // news: the agent ids this system turn passes on.
 const snoozeListenOn = () => VOICE_OK && !!config.voice && !!config.snoozeListen && voiceReady() && !intro;
 async function prompt(text, image = null, note = '', byVoice = false, news = null, listenAfter = false) {
+  try { breadboardChat?.beginTurn(text); } catch {
+  }
   // What they said, word for word, for the handoffs below (a heavy model, a background agent). System lines aren't theirs.
   turnWords = news || intro || String(text).startsWith('(') ? '' : String(text);
   nextMessageLearn(turnWords);
@@ -2962,7 +3021,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     ui({ kind: 'look', look: config.look ?? 'classic' });
     if (config.avatarPin) ui({ kind: 'avatar_pin', ...config.avatarPin }); // pinned before a restart: back where they left it
     if (config.onboarded) ui({ kind: 'greet' });
-    agents.sync();
+    opencode.sync();
   } else if (m.type?.startsWith('ob_') || m.type?.startsWith('chat_') || m.type === 'set_keys' || m.type === 'set_actions' || m.type === 'set_login' || m.type === 'keybind_error') onGuide(m).catch((e) => console.error('guide', e));
   else if (m.type?.startsWith('voice')) onVoice(m);
   else if (m.type === 'snap') areaSnap();
@@ -3009,11 +3068,11 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   else if (m.type === 'login_item_status') onLoginStatus(m);
   else if (m.type === 'notch_screen') { notchScreen = !!m.on; notchUi(); voiceConfig(); menu(); }
   // The agents' corner: Stop, Allow / Don't allow, a file tile, Open folder, and closing a shelf or a failed row.
-  else if (m.type === 'agent_stop') agents.stop(String(m.id));
-  else if (m.type === 'agent_answer') agents.answer(String(m.id), m.allow === true);
+  else if (m.type === 'agent_stop') { const id = String(m.id); if (opencode.get(id)) opencode.stop(id).catch((e) => logLine('opencode_stop', { error: String(e.message).slice(0, 120) })); else agents.stop(id); }
+  else if (m.type === 'agent_answer') { const id = String(m.id); if (opencode.get(id)) opencode.send(id, m.allow === true ? 'Yes, go ahead.' : "No, don't do that.").catch((e) => logLine('opencode_answer', { error: String(e.message).slice(0, 120) })); else agents.answer(id, m.allow === true); }
   else if (m.type === 'agent_open') agents.openFile(String(m.id), String(m.path ?? '')).catch((e) => console.error('agent open', e));
   else if (m.type === 'agent_folder') agents.openFolder(String(m.id), { files: m.files === true }).catch((e) => console.error('agent folder', e));
-  else if (m.type === 'agent_dismiss') agents.dismiss(String(m.id));
+  else if (m.type === 'agent_dismiss') { if (!opencode.dismiss(String(m.id))) agents.dismiss(String(m.id)); }
 }).on('close', () => {
   // The app quit (or is restarting for an update): save a reply still running, let the last saves land, never hang.
   if (busy) syncSession();
@@ -3076,15 +3135,14 @@ scheduleReminders();
 // prompts; what it finds comes back as agent news (desk.tick). A recurring job carries on in its last run's folder.
 async function runJob(j, { now = false } = {}) {
   if (!j) throw new Error('No such scheduled job.');
-  await agents.loaded;
-  const prev = j.lastAgentId ? agents.get(j.lastAgentId) : null;
+  const prev = j.lastAgentId ? (opencode.get(j.lastAgentId) ?? agents.get(j.lastAgentId)) : null;
   if (prev && (prev.state === 'working' || prev.state === 'waiting')) {
     if (now) throw new Error(`Its last run (${prev.id}) is still going.`);
     await markRun(j.id, { error: 'the last run was still going, so this one was skipped' });
     panel(); return null;
   }
   try {
-    const a = await agents.start({ type: j.type, title: j.title, brief: jobBrief(j, userName), returns: j.returns ?? undefined, subagent: j.subagent ?? undefined, continue: prev?.id, scheduled: true });
+    const a = await opencode.create({ title: j.title, brief: jobBrief(j, userName), folder: j.folder, host: j.host });
     await markRun(j.id, { agentId: a.id });
     logLine('job_run', { id: j.id, agent: a.id, now });
     return a;
@@ -3097,9 +3155,9 @@ async function runJob(j, { now = false } = {}) {
 }
 // A row on the Abilities page's Routines tab: when it runs next, how often, and how its last run went.
 function jobRow(j) {
-  const a = j.lastAgentId ? agents.get(j.lastAgentId) : null;
+  const a = j.lastAgentId ? (opencode.get(j.lastAgentId) ?? agents.get(j.lastAgentId)) : null;
   const last = !j.lastRunAt ? '' : j.lastError ? `Didn't run: ${j.lastError}` : a?.state === 'working' || a?.state === 'waiting' ? 'Running now'
-    : a?.result?.outcome ? `Last: ${a.result.outcome}` : a?.state === 'failed' ? `Last run failed${a.reason ? `: ${a.reason}` : ''}` : `Last ran ${fmtWhen(j.lastRunAt)}`;
+    : (a?.summary ?? a?.result?.outcome) ? `Last: ${a.summary ?? a.result.outcome}` : a?.state === 'failed' ? `Last run failed${a.reason ? `: ${a.reason}` : ''}` : `Last ran ${fmtWhen(j.lastRunAt)}`;
   return { id: j.id, title: j.title, paused: !!j.paused, next: j.paused ? 'Paused' : j.due != null ? fmtWhen(j.due) : 'No next run', repeat: j.repeat ? repeatLabel(j.repeat) : '', last, bad: !!j.lastError || a?.state === 'failed' };
 }
 async function jobTick() {
