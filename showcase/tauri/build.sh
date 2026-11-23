@@ -33,7 +33,15 @@ case "$TRIPLE" in
   *-linux-*)
     mkdir -p src-tauri/binaries
     cargo build --release --locked --manifest-path src-tauri/voice-win/Cargo.toml --target "$TRIPLE"
-    cp "src-tauri/voice-win/target/$TRIPLE/release/roamies-voice" "src-tauri/binaries/roamies-voice-$TRIPLE" ;;
+    cp "src-tauri/voice-win/target/$TRIPLE/release/roamies-voice" "src-tauri/binaries/roamies-voice-$TRIPLE"
+    # The hands helper is a Python script (hands-linux/README.md says what it needs). Tauri bundles it as an
+    # external binary, and in dev it goes beside the debug app, which is where the app looks for it.
+    install -m 755 src-tauri/hands-linux/roamies-hands "src-tauri/binaries/roamies-hands-$TRIPLE"
+    if [ "$MODE" = dev ]; then
+      DEV="src-tauri/target/debug"; [ -n "$TARGET" ] && DEV="src-tauri/target/$TARGET/debug"
+      mkdir -p "$DEV"
+      install -m 755 src-tauri/hands-linux/roamies-hands "$DEV/roamies-hands"
+    fi ;;
 esac
 cd src-tauri
 # macOS signing: APPLE_SIGNING_IDENTITY if set, else the first Developer ID Application certificate in

@@ -53,6 +53,14 @@
     let sent = '', sentAt = 0;
     setInterval(() => {
       if (!window.Roamie?.hitTest) return;
+      // Acting in another app: let every click through (the pet can sit where the click lands).
+      if (handsBusy) {
+        if (sent !== '') {
+          sent = ''; sentAt = performance.now();
+          invoke('set_hit_rects', { rects: [] }).catch(() => { sent = null; });
+        }
+        return;
+      }
       const rects = [];
       const grown = (r) => rects.push(Math.floor(r[0]) - 8, Math.floor(r[1]) - 8, Math.ceil(r[2]) + 16, Math.ceil(r[3]) + 16);
       for (const r of Roamie.inkRects?.() ?? []) grown(r);

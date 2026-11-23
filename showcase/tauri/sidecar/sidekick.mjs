@@ -36,7 +36,7 @@ import { cleanWakeName, wakeName } from './wakename.mjs';
 import { KEY_NAME as SYNC_KEY, MIN_PASSPHRASE, checkFolder, folderReady, merge as syncMerge, newDevice, prepareFolder, readRemotes, suggestFolders, tooMuchGone, writeOwn } from './sync.mjs';
 import { EMOTES, EchoFilter, ReplyStream } from './reply.mjs';
 import { downloadModel, isReady, modelDir, sizeLabel, totalBytes } from './voicemodel.mjs';
-import { copyText, createTools, expand, fitImage, imageBlock, oneYesNoAtATime, winOpen } from './tools.mjs';
+import { copyText, createTools, expand, fitImage, formatWindows, imageBlock, oneYesNoAtATime, winOpen } from './tools.mjs';
 import { describeMarks } from './marks.mjs';
 import { faviconFor } from './draw.mjs';
 import { QUESTIONS, openNote, answerTurn, wantsSkip, endsChat, splitTurn, plain, stripNote, tourBeats, goalFrom, showcaseBeats } from './intro.mjs';
@@ -693,6 +693,36 @@ tools.push(...createMcpTools({
   allowActions: () => !!config.allowActions, skipAllow: () => !!config.allowActions && !!config.skipAllow,
   keyStore: MAC ? 'Keychain' : LINUX ? 'keyring' : 'Windows key store',
 }));
+// Linux: the desktop in one round trip, instead of list_windows plus a few window_control calls.
+if (process.platform === 'linux' && HANDS_OK) tools.push({
+  name: 'desktop_snapshot',
+  description: 'The desktop in one call: the focused window, monitors, workspaces, the Zen workspace and tab counts (with the tab showing now), and the avatar pin. Use it before acting instead of list_windows plus several window_control calls.',
+  parameters: z.object({}),
+  execute: async () => {
+    const [wins, mons, wss] = await Promise.all([
+      hands('windows').catch(() => null),
+      hands('wm', JSON.stringify({ action: 'monitors' })).catch(() => null),
+      hands('wm', JSON.stringify({ action: 'workspaces' })).catch(() => null),
+    ]);
+    const lines = [];
+    const front = (wins?.windows ?? []).find((w) => w.frontApp);
+    lines.push(front ? `Focused: ${front.app}${front.title ? ` — ${front.title}` : ''}` : 'Focused: unknown');
+    lines.push(`Current workspace: ${wins?.activeWorkspace ?? '?'}`);
+    lines.push(`Monitors:\n${mons?.text ?? 'unavailable'}`);
+    lines.push(`Workspaces:\n${wss?.text ?? 'unavailable'}`);
+    const zwin = (wins?.windows ?? []).find((w) => w.zen);
+    if (zwin?.zen) {
+      const z = zwin.zen;
+      const spaces = (z.spaces ?? []).map((sp) => `${sp.name}${sp.active ? ' (active)' : ''}: ${sp.tabs?.length ?? 0}`);
+      lines.push(`Zen: ${z.active ?? '?'} active. ${spaces.join(' | ')}`);
+      const cur = (z.spaces ?? []).find((sp) => sp.active)?.tabs?.find((t) => t.current);
+      if (cur) lines.push(`Zen tab now: "${cur.title}" — ${cur.url}`);
+    }
+    const pin = config.avatarPin;
+    lines.push(`Avatar: ${!pin ? 'free (follows the cursor)' : pin.corner ? `pinned ${String(pin.corner).replace('-', ' ')}` : `pinned at ${pin.x ?? 'middle'}, ${pin.y ?? 'middle'}`}`);
+    return lines.join('\n');
+  },
+});
 let requestNo = 0; // the request being answered (nextTurn), for holdAfterLaunch
 holdAfterLaunch(tools, () => requestNo);
 leanTools(tools); // short schemas for the model (lean.mjs)
@@ -741,6 +771,8 @@ function anim(name, args = {}) {
       return { tool: 'look', variant: app ? 'window' : 'screen', label: 'looking at', detail: app || 'your screen' };
     }
     case 'list_windows': return { tool: 'read', variant: 'many', label: 'checking', detail: 'your windows' };
+    case 'desktop_snapshot': return { tool: 'read', variant: 'many', label: 'checking', detail: 'the desktop' };
+    case 'pointer_drag': return { tool: 'run', variant: 'progress', label: 'dragging', detail: 'the mouse' };
     case 'read_window': return { tool: 'read', variant: 'search', label: 'reading', detail: String(args.target ?? 'front').slice(0, 24) };
     case 'act_in_app': return { tool: 'write', variant: 'edit', label: 'working in', detail: String(args.target ?? 'front').slice(0, 24) };
     case 'draw': return null; // the drawing is its own thing, not a tool prop
