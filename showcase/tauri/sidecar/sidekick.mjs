@@ -66,6 +66,7 @@ import { deleteSkill, listSkills, readSkill, saveSkill, skillIndex } from './ski
 import { getJob, jobBrief, jobsText, listJobs, markRun, nextJobDue, removeJob, takeDueJobs, updateJob } from './jobs.mjs';
 import { lookLine, lookSeen } from './looknote.mjs';
 import { leanTools } from './lean.mjs';
+import { createUsageLog } from './usage.mjs';
 import { z } from 'zod';
 
 console.log = console.info = (...a) => console.error(...a);
@@ -127,6 +128,8 @@ const DEFAULTS = {
   subagents: false, // the master switch for subagents: specialists the chat hands background work to (subagents.mjs)
   delegate: 'ask', // 'ask': hand work to subagents only when they ask for an agent or background work; 'auto': also by itself
   crew: {}, // the model picked for each specialist ('provider:model'); one with none follows hybrid models if they are on
+  mcpTrust: {}, // connection name → 'always' when its tools run without the approval bubble (default: ask)
+  mcpTrustAll: false, // one switch: every connection's tools run without the bubble
   backups: false, // the master switch for backup models when one is at its limit or unavailable
   fallbacks: ['', ''], // backup models, in order, for when the default hits its usage limit (limits.mjs)
   efforts: {}, // how hard each model slot thinks: default, each heavy job, backup1, backup2 ('' = automatic, 'off', or a level)
@@ -693,6 +696,7 @@ const mcp = createMcp({ secrets, log: (kind, data) => logLine(kind, data) });
 tools.push(...createMcpTools({
   mcp, ask, isYes, userName, checkCall: checkMcpCall, openUrl: (u) => openUrl(u),
   allowActions: () => !!config.allowActions, skipAllow: () => !!config.allowActions && !!config.skipAllow,
+  trusted: (server) => !!config.mcpTrustAll || config.mcpTrust?.[server] === 'always',
   keyStore: MAC ? 'Keychain' : LINUX ? 'keyring' : 'Windows key store',
 }));
 // Linux: the desktop in one round trip, instead of list_windows plus a few window_control calls.
@@ -1134,7 +1138,7 @@ async function onListCard(part, m) {
   logLine('list_card', { part, op });
 }
 // Every way a request is cancelled is logged with what did it, so a reply that never came can be traced.
-function interruptQuietly(by) { if (busy) { quiet = true; logLine('stopped', { by }); controller?.abort(); } }
+function interruptQuietly(by) { if (busy) { quiet = true; logLine('stopped', { by }); controller?.abort(); holdWake(false); } }
 
 // The live block is per-call state, not conversation: never save it.
 const withoutLive = (msgs) => msgs.map((m) => {
@@ -1379,14 +1383,12 @@ process.on('uncaughtException', (e, origin) => {
   // A sync throw leaves state unknown; exit after the log line lands so the app restarts us cleanly.
   setTimeout(() => process.exit(1), 200);
 });
-// One line per request in ~/Roamies/Data/usage.jsonl: token counts and timings only, never what was said.
+// One line per request in ~/Roamies/Data/usage.jsonl: token counts and timings only, never what was said. The log
+// is read at start, so today's cards and the last two weeks survive a restart.
 const USAGE_FILE = path.join(DATA_DIR, 'usage.jsonl');
-const usageToday = { day: '', requests: 0, tokens: 0 };
+const usage = createUsageLog(USAGE_FILE);
 function logUsage(rec) {
-  const day = new Date().toDateString();
-  if (usageToday.day !== day) Object.assign(usageToday, { day, requests: 0, tokens: 0 });
-  usageToday.requests++; usageToday.tokens += rec.in + rec.cacheWrite + rec.out;
-  fs.appendFile(USAGE_FILE, JSON.stringify(rec) + '\n', { mode: 0o600 }).catch(() => {});
+  usage.record(rec);
   menu();
 }
 // usage.jsonl only grows: past ~512 KB keep the last 90 days, rewritten atomically.
@@ -1670,7 +1672,8 @@ async function prompt(text, image = null, note = '', byVoice = false, news = nul
   } finally {
     watch?.stop();
     busy = false; turnVoice = null; turnImage = null;
-    stir(); saidCap = setTimeout(() => { saidPending = false; stir(); }, 90_000);
+    if (controller.signal.aborted) holdWake(false); // stopped: let go of the wake hold now, not when the reply would have ended
+    stir(); saidCap = setTimeout(() => { saidPending = false; holdWake(false); stir(); }, 90_000);
     // A tool cut off by Stop never reports back: end its tag too, or the Sidekick kept showing it ("looking at
     // CapCut") on every later request, with their own tags queued behind it.
     for (const id of activity.stopped()) ui({ kind: 'agent', e: { type: 'tool_end', id, isError: true } });
@@ -2290,6 +2293,7 @@ function panelState() {
   // The Model page's model is the user's default, never the one a heavy job is borrowing (that's hybrid.active).
   const mine = userDefault(config, routed, defaultPick), current = getModel(mine.model);
   const doing = activity.doing();
+  const today = usage.today();
   return {
     version: VERSION, whatsNewFrom: config.whatsNewFrom ?? null, os: MAC ? 'mac' : process.platform === 'win32' ? 'win' : LINUX ? 'linux' : 'other', snap: SNAP_OK,
     // Wayland: shortcuts are commands bound in the desktop's settings (bind), and there's no Cursor size.
@@ -2330,10 +2334,13 @@ function panelState() {
     }),
     loggingIn,
     recent: activity.recent,
-    usage: usageToday.requests ? { requests: usageToday.requests, tokens: usageToday.tokens } : null,
+    usage: today.requests ? today : null,
+    usageHistory: usage.history(14),
+    usageTotals: { week: usage.total(7), month: usage.total(30) },
     facts: listFacts().slice().reverse().map((f) => ({ id: f.id, text: f.text })),
     jobs: listJobs().map(jobRow),
-    connections: mcp.status(),
+    connections: mcp.status().map((x) => ({ ...x, trust: config.mcpTrust?.[x.name] === 'always' ? 'always' : 'ask' })),
+    trustAll: !!config.mcpTrustAll,
     skills: listSkills().map((k) => ({ slug: k.slug, name: k.name, description: k.description })), learnSkills: config.learnSkills !== false,
     commitments: openCommitments().map((c) => ({ id: c.id, text: c.text, due: c.due ?? null, when: c.due ? `${fmtWhen(c.due)}${c.repeat ? ` · repeats ${repeatLabel(c.repeat)}` : ''}` : '', overdue: !!(c.due && c.due < Date.now()), repeat: c.repeat ?? null })),
     look: config.look ?? 'classic', looks: LOOKS.map(([id, label]) => [id, label]), name: lookName(),
@@ -2497,7 +2504,7 @@ function onWriteTap() {
 async function onMenu(id, via) {
   if (id === 'show') ui({ kind: 'summon', show: true });
   else if (id === 'ask') await typeToAsk();
-  else if (id === 'stop') { const cancelled = busy; if (busy) logLine('stopped', { by: via === 'esc' ? 'esc' : 'stop' }); endIntro(); controller?.abort(); speech.stop(); ink.stop(cancelled); }
+  else if (id === 'stop') { const cancelled = busy; if (busy) logLine('stopped', { by: via === 'esc' ? 'esc' : 'stop' }); endIntro(); controller?.abort(); speech.stop(); ink.stop(cancelled); holdWake(false); }
   else if (id === 'new') {
     endIntro();
     freshSession('new'); menu();
@@ -2617,6 +2624,20 @@ async function onMenu(id, via) {
     else { await deleteSkill(slug); panelNote(`Removed the skill “${k.name}”.`); menu(); }
   }
   // Connections, from their page. Adding one is only by asking (add_connection); Remove is asked first in the panel.
+  else if (/^mcp:trust:[a-z0-9][a-z0-9_-]{0,31}:(ask|always)$/i.test(id)) {
+    const [, , name, mode] = id.split(':');
+    if (!mcp.has(name)) return;
+    config.mcpTrust = { ...(config.mcpTrust ?? {}) };
+    if (mode === 'always') config.mcpTrust[name] = 'always';
+    else delete config.mcpTrust[name];
+    saveConfig();
+    panel();
+  }
+  else if (id === 'mcp:trustall') {
+    config.mcpTrustAll = !config.mcpTrustAll;
+    saveConfig();
+    panel();
+  }
   else if (/^mcp:(on|off|login|remove):[a-z0-9][a-z0-9_-]{0,31}$/i.test(id)) {
     const [, what, name] = id.split(':');
     if (!mcp.has(name)) return;

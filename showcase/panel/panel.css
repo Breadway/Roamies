@@ -381,3 +381,16 @@ html, body { height: 100%; background: transparent; }
 
 /* Arabic and Hebrew in a list (dir=auto on the text): the Arabic font first, for its own word spacing. */
 .item .text:dir(rtl) { font-family: "Roamies Arabic RTL", var(--mono); }
+
+/* Token use over time (Home): one bar per day for the last week, with the 7- and 30-day totals above. */
+.usage-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.usage-day { display: grid; grid-template-columns: 3.4em 1fr 4.4em; gap: 8px; align-items: center; font-size: var(--t-small); color: var(--ink-3); }
+.usage-day .n { text-align: right; color: var(--ink-2); }
+.usage-track { height: 6px; background: rgba(120, 255, 226, 0.12); border-radius: 2px; overflow: hidden; }
+.usage-bar { display: block; height: 100%; background: var(--accent); min-width: 0; }
+
+/* Tokens: four cards in a row, today's input, output, cache hits and requests. */
+.usage-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.usage-card { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 7px 6px; border: 1px solid var(--line, var(--line-hi)); background: rgba(120, 255, 226, 0.04); }
+.usage-card .k { font-size: var(--t-small); color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.usage-card .v { font-size: var(--t-body); color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
