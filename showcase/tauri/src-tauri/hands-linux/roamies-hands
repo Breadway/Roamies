@@ -785,8 +785,11 @@ def ensure_atspi_bus():
     for attempt in range(2):
         addr = None
         if shutil.which("gdbus"):
-            r = sh(["gdbus", "call", "--session", "--dest", "org.a11y.Bus", "--object-path", "/org/a11y/bus", "--method", "org.a11y.Bus.GetAddress"])
-            m = re.search(r"unix:path=([^'\"]+)", r.stdout or "")
+            try:
+                r = sh(["gdbus", "call", "--session", "--dest", "org.a11y.Bus", "--object-path", "/org/a11y/bus", "--method", "org.a11y.Bus.GetAddress"], timeout=3)
+            except Exception:
+                r = None
+            m = re.search(r"unix:path=([^'\"]+)", (r.stdout if r else "") or "")
             addr = m.group(1) if m else None
         if addr:
             try:
@@ -799,7 +802,10 @@ def ensure_atspi_bus():
             except Exception:
                 pass
         if attempt == 0:
-            sh(["systemctl", "--user", "restart", "at-spi-dbus-bus.service"])
+            try:
+                sh(["systemctl", "--user", "restart", "at-spi-dbus-bus.service"], timeout=10)
+            except Exception:
+                pass
             time.sleep(1.2)
     return False
 
