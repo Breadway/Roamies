@@ -40,6 +40,11 @@ pub(crate) fn session() -> Session {
     *SESSION.get().unwrap_or(&Session::X11)
 }
 
+/// A Wayland session, where the Tauri overlay is a toplevel and the click-through host is the alternative.
+pub(crate) fn wayland() -> bool {
+    session() == Session::Wayland
+}
+
 /// First thing in main, before GTK starts and before any other thread exists.
 pub(crate) fn init() {
     let env = |k: &str| std::env::var(k).ok();
