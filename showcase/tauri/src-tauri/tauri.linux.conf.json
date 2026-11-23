@@ -1,11 +1,13 @@
 {
   "bundle": {
     "resources": {
-      "onnxruntime/libonnxruntime.so": "libonnxruntime.so"
+      "onnxruntime/libonnxruntime.so": "libonnxruntime.so",
+      "../dist/": "dist/"
     },
     "externalBin": [
       "binaries/roamies-voice",
-      "binaries/roamies-node"
+      "binaries/roamies-node",
+      "binaries/roamies-overlay"
     ],
     "linux": {
       "appimage": {

@@ -59,6 +59,59 @@ fn trace() -> bool {
     *ON.get_or_init(|| std::env::var_os("ROAMIES_TRACE").is_some())
 }
 
+// ---------- layer shell (Wayland) ----------
+
+/// On a Wayland session the overlay becomes a layer surface, where Hyprland (and other
+/// layer-shell compositors) honour the input region. A toplevel's input region is ignored by
+/// Hyprland on purpose, so a full-screen toplevel would swallow every click.
+pub(crate) fn layer_overlay() -> bool {
+    session() == Session::Wayland
+}
+
+/// Turns the already-built (but hidden) overlay window into a full-screen overlay layer, then
+/// shows it. Returns whether the window really is a layer surface.
+pub(crate) fn init_layer_shell(window: &tauri::WebviewWindow) -> bool {
+    use gtk::prelude::*;
+    use gtk_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
+    let w = window.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = window.run_on_main_thread(move || {
+        let Ok(gw) = w.gtk_window() else { let _ = tx.send(false); return };
+        // gtk-layer-shell must be initialised before the GtkWindow is realised. Tauri builds
+        // it hidden, but if the webview realised it anyway, unrealise it once and re-map.
+        if gw.is_realized() {
+            eprintln!("[layer] overlay was already realised; unrealising before init");
+            gw.unrealize();
+        }
+        gw.init_layer_shell();
+        gw.set_namespace("roamies");
+        gw.set_layer(Layer::Overlay);
+        for edge in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
+            gw.set_anchor(edge, true);
+        }
+        gw.set_exclusive_zone(-1);
+        gw.set_keyboard_mode(KeyboardMode::None);
+        let ok = gw.is_layer_window();
+        gw.show();
+        let _ = tx.send(ok);
+    });
+    rx.recv_timeout(Duration::from_secs(2)).unwrap_or(false)
+}
+
+/// The ask bar and input bubbles need the keyboard; everything else stays click-through.
+pub(crate) fn set_layer_keyboard(window: &tauri::WebviewWindow, on: bool) {
+    use gtk::prelude::*;
+    use gtk_layer_shell::{KeyboardMode, LayerShell};
+    let w = window.clone();
+    let _ = window.run_on_main_thread(move || {
+        let Ok(gw) = w.gtk_window() else { return };
+        gw.set_keyboard_mode(if on { KeyboardMode::OnDemand } else { KeyboardMode::None });
+        if on {
+            gw.present();
+        }
+    });
+}
+
 // ---------- click-through by region ----------
 
 /// The page's click areas ([x, y, w, h, …] in CSS px) as whole-pixel rectangles: bad numbers and empty ones are
