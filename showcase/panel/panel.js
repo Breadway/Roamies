@@ -185,6 +185,7 @@
   };
   const REDUCED = matchMedia('(prefers-reduced-motion: reduce)');
   const tokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+  const money = (n) => `$${n >= 1 ? n.toFixed(2) : n >= 0.01 ? n.toFixed(3) : n.toFixed(4)}`;
   // Why pick each voice model: a line under the choice, and more in its tooltip with the cost.
   const WHY = { 'drama-3': 'More emotion. Slower, and costs more.', 's2.1-pro': 'Natural pace. Less emotion, costs less.' };
   const WHY_LONG = {
@@ -391,7 +392,7 @@
         card('Input', tokens(u.input)),
         card('Output', tokens(u.out)),
         card('Cache hits', tokens(u.cacheRead)),
-        card('Requests', String(u.requests))),
+        card('Cost', money(u.cost ?? 0))),
       days.some((d) => d.tokens) ? el('ul', { className: 'usage-list', 'aria-label': 'Tokens used each day, last 7 days' },
         days.map((d) => el('li', { className: 'usage-day' },
           el('span', { className: 'n', textContent: new Date(`${d.day}T00:00:00`).toLocaleDateString(undefined, { weekday: 'short' }) }),

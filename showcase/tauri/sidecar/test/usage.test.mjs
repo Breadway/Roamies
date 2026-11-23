@@ -23,6 +23,8 @@ const today = usage.today();
 assert.equal(today.requests, 2);
 assert.deepEqual({ input: today.input, cacheRead: today.cacheRead, cacheWrite: today.cacheWrite, out: today.out }, { input: 100, cacheRead: 20, cacheWrite: 10, out: 55 });
 assert.equal(today.tokens, 165, 'input + cache writes + output, as before');
+// Off-peak DeepSeek V4.1 Flash: $0.15 input, $0.003 cache hit, $0.60 output per million.
+assert.ok(Math.abs(today.cost - 0.00004806) < 1e-12, 'cost follows the three token kinds');
 
 const history = usage.history(14);
 assert.equal(history.length, 14);
@@ -34,9 +36,11 @@ assert.equal(history.find((d) => d.day === dayKey(now - 8 * DAY)).requests, 1, '
 const week = usage.total(7);
 assert.equal(week.requests, 3, 'the 8-day-old record is outside the week');
 assert.equal(week.tokens, 185);
+assert.ok(Math.abs(week.cost - 0.00005556) < 1e-12, 'the week adds up');
 const month = usage.total(30);
 assert.equal(month.requests, 4);
 assert.equal(month.tokens, 195);
+assert.ok(Math.abs(month.cost - 0.00005841) < 1e-12, 'the month adds up');
 
 usage.record({ t: now, in: 1, cacheRead: 0, cacheWrite: 2, out: 3 });
 assert.equal(usage.today().requests, 3);
