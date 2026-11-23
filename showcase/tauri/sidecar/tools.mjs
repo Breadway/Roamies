@@ -209,6 +209,17 @@ export const imageBlock = async (file, mediaType) => {
   fs.unlink(file).catch(() => {});
   return { type: 'image', mediaType, data };
 };
+// The image formats the models take, by their first bytes: a text file renamed .png is refused, and a picture
+// without its extension still works.
+export const imageMediaType = (buf) => {
+  if (buf.length >= 8 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  if (buf.length >= 6 && /^GIF8[79]a$/.test(buf.subarray(0, 6).toString('ascii'))) return 'image/gif';
+  if (buf.length >= 12 && buf.subarray(0, 4).toString('ascii') === 'RIFF' && buf.subarray(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  return null;
+};
+// The model's own per-image cap is 5 MB encoded, and base64 adds a third: keep the file under 3.5 MB.
+const MAX_IMAGE_BYTES = 3.5 * 1024 * 1024;
 
 // deps: what the tools need from the app (settings, overlay, input bubble, menu). State lives per instance.
 const BROWSERS = /^(browser|safari|google chrome|chrome|arc|firefox|microsoft edge|edge|brave browser|brave|opera|vivaldi)$/i;
@@ -1037,6 +1048,27 @@ A drawing stays until it's cleared, the window changes or the next one replaces 
       name: 'read_file', description: 'Read a text file. Paths may start with ~. Files with passwords or keys (.ssh, .env, auth.json, keychains) are off limits.',
       parameters: z.object({ path: z.string() }),
       execute: async ({ path: p }) => clip(await fs.readFile(allowed(checkRead(at(p), HOME)), 'utf8'), 60_000),
+    },
+    {
+      name: 'read_image',
+      description: 'Look at an image file on disk (PNG, JPEG, GIF or WebP). Paths may start with ~. Nothing is shown on the screen: the picture comes to you, so use this instead of take_screenshot for a file that already exists. Password and key files are still off limits.',
+      parameters: z.object({ path: z.string() }),
+      execute: async ({ path: p }) => {
+        const f = allowed(checkRead(at(p), HOME));
+        let buf;
+        try { buf = await fs.readFile(f); } catch (e) {
+          if (e?.code === 'ENOENT') throw new Error(`There's no file at ${p}.`);
+          if (e?.code === 'EISDIR') throw new Error(`${p} is a folder, not an image.`);
+          throw e;
+        }
+        const mediaType = imageMediaType(buf);
+        if (!mediaType) throw new Error(`${p} isn't a PNG, JPEG, GIF or WebP image.`);
+        if (buf.length > MAX_IMAGE_BYTES) throw new Error(`That image is ${(buf.length / 1048576).toFixed(1)} MB. The model takes images up to about 3.5 MB; resize it first.`);
+        return { content: [
+          { type: 'text', text: `This is the image file ${p} (${mediaType}).` },
+          { type: 'image', mediaType, data: buf.toString('base64') },
+        ] };
+      },
     },
     {
       name: 'list_files', description: 'List the files and folders in a directory.',
