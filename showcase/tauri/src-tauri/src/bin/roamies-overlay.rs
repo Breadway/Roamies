@@ -18,8 +18,10 @@ mod imp {
     use gtk_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
     use javascriptcore::ValueExt;
     use webkit2gtk::{
-        SettingsExt, UserContentInjectedFrames, UserContentManager, UserContentManagerExt, UserScript,
-        UserScriptInjectionTime, WebViewExt,
+        NavigationPolicyDecision, NavigationPolicyDecisionExt, PolicyDecisionExt,
+        PolicyDecisionType, SecurityManagerExt, SettingsExt, URIRequestExt, URISchemeRequestExt,
+        UserContentInjectedFrames, UserContentManager, UserContentManagerExt, UserScript,
+        UserScriptInjectionTime, WebContextExt, WebViewExt, WebViewExtManual,
     };
 
     const SHIM: &str = r#"
@@ -47,13 +49,27 @@ mod imp {
     pub(super) fn main() {
         let mut dist = String::new();
         let mut extra = String::new();
+        let mut check = false;
         let mut args = std::env::args().skip(1);
         while let Some(a) = args.next() {
             match a.as_str() {
                 "--dist" => dist = args.next().unwrap_or_default(),
                 "--init" => extra = args.next().unwrap_or_default(),
+                "--supported" => check = true,
                 other => eprintln!("roamies-overlay: ignoring argument {other}"),
             }
+        }
+        // The app asks first whether this compositor supports layer-shell. A Wayland display and GTK are
+        // enough to answer; GNOME and some others say no, and the app keeps its ordinary Tauri overlay.
+        if check {
+            if gtk::init().is_err() {
+                std::process::exit(1);
+            }
+            std::process::exit(if gtk_layer_shell::is_supported() {
+                0
+            } else {
+                1
+            });
         }
         if dist.is_empty() {
             eprintln!("roamies-overlay: --dist <path to dist> is required");
@@ -93,11 +109,86 @@ mod imp {
             &[],
         ));
 
-        let web = webkit2gtk::WebView::with_user_content_manager(&manager);
+        // Serve the page through our own scheme instead of file://, so the page can never read arbitrary local
+        // files. The Tauri overlay uses its own protocol for the same reason.
+        let context = webkit2gtk::WebContext::default().expect("webkit web context");
+        if let Some(security) = context.security_manager() {
+            security.register_uri_scheme_as_local("roamies");
+            security.register_uri_scheme_as_secure("roamies");
+        }
+        let dist_files =
+            std::fs::canonicalize(&dist).unwrap_or_else(|_| std::path::PathBuf::from(&dist));
+        let root = dist_files.clone();
+        context.register_uri_scheme("roamies", move |req| {
+            let path = req.path().map(|p| p.to_string()).unwrap_or_default();
+            let file = root.join(path.trim_start_matches('/'));
+            let data = file
+                .canonicalize()
+                .ok()
+                .filter(|p| p.starts_with(&root))
+                .and_then(|p| std::fs::read(p).ok());
+            let (body, mime) = match data {
+                Some(bytes) => {
+                    let mime = match file.extension().and_then(|e| e.to_str()).unwrap_or("") {
+                        "html" => "text/html",
+                        "js" | "mjs" => "text/javascript",
+                        "css" => "text/css",
+                        "json" => "application/json",
+                        "png" => "image/png",
+                        "gif" => "image/gif",
+                        "svg" => "image/svg+xml",
+                        "woff2" => "font/woff2",
+                        "woff" => "font/woff",
+                        "ttf" => "font/ttf",
+                        "jpg" | "jpeg" => "image/jpeg",
+                        _ => "application/octet-stream",
+                    };
+                    (bytes, mime)
+                }
+                None => (Vec::new(), "text/plain"),
+            };
+            let bytes = gtk::glib::Bytes::from(&body);
+            let stream = gtk::gio::MemoryInputStream::from_bytes(&bytes);
+            req.finish(&stream, body.len() as i64, Some(mime));
+        });
+        let web =
+            webkit2gtk::WebView::new_with_context_and_user_content_manager(&context, &manager);
         web.set_background_color(&gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.0));
         if let Some(settings) = WebViewExt::settings(&web) {
-            settings.set_allow_file_access_from_file_urls(true);
+            settings.set_allow_file_access_from_file_urls(false);
+            settings.set_allow_universal_access_from_file_urls(false);
         }
+        web.connect_load_changed(|_, event| {
+            if event == webkit2gtk::LoadEvent::Finished {
+                eprintln!("[roamies-overlay] page loaded");
+            }
+        });
+        web.connect_load_failed(|_, _event, uri, err| {
+            eprintln!("[roamies-overlay] couldn't load {uri}: {err}");
+            false
+        });
+        // Nothing but our own pages may be navigated to, and no page may open another window.
+        web.connect_decide_policy(move |_, decision, kind| {
+            match kind {
+                PolicyDecisionType::NavigationAction => {
+                    if let Some(nav) = decision.downcast_ref::<NavigationPolicyDecision>() {
+                        if let Some(req) = nav.navigation_action().and_then(|a| a.request()) {
+                            let uri = req.uri().unwrap_or_default();
+                            if !uri.starts_with("roamies://app/") && !uri.starts_with("about:") {
+                                decision.ignore();
+                                return true;
+                            }
+                        }
+                    }
+                }
+                PolicyDecisionType::NewWindowAction => {
+                    decision.ignore();
+                    return true;
+                }
+                _ => {}
+            }
+            false
+        });
         win.add(&web);
 
         win.connect_realize(|w| {
@@ -125,7 +216,13 @@ mod imp {
                     ok,
                     serde_json::to_string(&value).unwrap_or_else(|_| "null".into())
                 );
-                let _ = web2.evaluate_javascript(&js, None, None, None::<&gtk::gio::Cancellable>, |_| {});
+                let _ = web2.evaluate_javascript(
+                    &js,
+                    None,
+                    None,
+                    None::<&gtk::gio::Cancellable>,
+                    |_| {},
+                );
             };
             match cmd {
                 "sidecar_send" => {
@@ -146,20 +243,25 @@ mod imp {
                 }
                 "set_typing" => {
                     let on = args.get("on").and_then(|v| v.as_bool()).unwrap_or(false);
-                    win2.set_keyboard_mode(if on { KeyboardMode::Exclusive } else { KeyboardMode::None });
+                    win2.set_keyboard_mode(if on {
+                        KeyboardMode::Exclusive
+                    } else {
+                        KeyboardMode::None
+                    });
                     if on {
                         win2.present();
                     }
                     reply(true, serde_json::Value::Null);
                 }
+                // Not used on Linux: clicks go through by region (set_hit_rects), and the buddy overlay is macOS only.
                 "set_hot" | "esc_watch" => reply(true, serde_json::Value::Null),
                 "buddy" => reply(true, serde_json::Value::Bool(false)),
-                _ => reply(true, serde_json::Value::Null),
+                _ => reply(false, serde_json::json!("unknown command")),
             }
         });
 
         // The handler must exist before the page starts using window.webkit.messageHandlers.
-        web.load_uri(&format!("file://{dist}/desktop.html"));
+        web.load_uri("roamies://app/desktop.html");
 
         // The app's messages, evaluated on the GTK main loop.
         let (tx, rx) = mpsc::channel::<String>();
@@ -172,6 +274,8 @@ mod imp {
                     break;
                 }
             }
+            // The app closed the pipe (Quit, an update, a relaunch): leave, instead of staying on screen as a ghost.
+            let _ = tx.send(r#"{"type":"quit"}"#.to_string());
         });
 
         let web3 = web.clone();
@@ -187,11 +291,23 @@ mod imp {
                             "window.__roamieHost&&window.__roamieHost({})",
                             serde_json::to_string(&msg).unwrap_or_else(|_| "null".into())
                         );
-                        let _ = web3.evaluate_javascript(&js, None, None, None::<&gtk::gio::Cancellable>, |_| {});
+                        let _ = web3.evaluate_javascript(
+                            &js,
+                            None,
+                            None,
+                            None::<&gtk::gio::Cancellable>,
+                            |_| {},
+                        );
                     }
                     "js" => {
                         if let Some(code) = value.get("code").and_then(|v| v.as_str()) {
-                            let _ = web3.evaluate_javascript(code, None, None, None::<&gtk::gio::Cancellable>, |_| {});
+                            let _ = web3.evaluate_javascript(
+                                code,
+                                None,
+                                None,
+                                None::<&gtk::gio::Cancellable>,
+                                |_| {},
+                            );
                         }
                     }
                     "ptr" => {
@@ -199,7 +315,13 @@ mod imp {
                         let y = value.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
                         let t = value.get("t").and_then(|v| v.as_f64()).unwrap_or(0.0);
                         let js = format!("window.__roamiePtr&&__roamiePtr({x},{y},{t})");
-                        let _ = web3.evaluate_javascript(&js, None, None, None::<&gtk::gio::Cancellable>, |_| {});
+                        let _ = web3.evaluate_javascript(
+                            &js,
+                            None,
+                            None,
+                            None::<&gtk::gio::Cancellable>,
+                            |_| {},
+                        );
                     }
                     "quit" => gtk::main_quit(),
                     _ => {}
@@ -220,8 +342,7 @@ mod imp {
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_secs_f64() * 1000.0)
                             .unwrap_or(0.0);
-                        let line =
-                            serde_json::json!({ "type": "ptr", "x": p.root_x, "y": p.root_y, "t": t });
+                        let line = serde_json::json!({ "type": "ptr", "x": p.root_x, "y": p.root_y, "t": t });
                         if tx_ptr.send(line.to_string()).is_err() {
                             break;
                         }

@@ -37,6 +37,14 @@ static SIDEKICK_OVERLAY: Mutex<Option<String>> = Mutex::new(None);
 /// Wayland: the GTK layer-shell overlay host's stdin (its stdout is read on a thread).
 #[cfg(target_os = "linux")]
 static LINUX_OVERLAY: Mutex<Option<ChildStdin>> = Mutex::new(None);
+/// The host process itself, so Quit can stop it and the screen watch can reap it.
+#[cfg(target_os = "linux")]
+static HOST_CHILD: Mutex<Option<Child>> = Mutex::new(None);
+/// How many times the host has been started in this run. After a few failures, fall back to the Tauri overlay.
+#[cfg(target_os = "linux")]
+static HOST_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(target_os = "linux")]
+static HOST_DISABLED: AtomicBool = AtomicBool::new(false);
 /// The setup guide is open: voice events go to it (for the "try it" test) instead of the agent.
 static ONBOARDING: AtomicBool = AtomicBool::new(false);
 const ONBOARDING_LABEL: &str = "onboarding";
@@ -115,9 +123,10 @@ fn to_overlays(app: &AppHandle, msg: &Value) {
         let mut host = LINUX_OVERLAY.lock().unwrap();
         if let Some(stdin) = host.as_mut() {
             let line = json!({ "type": "host", "msg": msg });
-            let _ = writeln!(stdin, "{line}");
-            let _ = stdin.flush();
-            return;
+            if writeln!(stdin, "{line}").is_ok() && stdin.flush().is_ok() {
+                return;
+            }
+            *host = None; // the host is gone: fall through to the Tauri overlays
         }
     }
     let js = format!("window.__roamieHost&&__roamieHost({msg})");
@@ -346,11 +355,6 @@ fn sidecar_send(app: AppHandle, msg: Value) {
 fn set_typing(app: AppHandle, window: WebviewWindow, on: bool) {
     let was = TYPING.swap(on, Ordering::Relaxed);
     let _ = window.set_focusable(on);
-    // Wayland layer overlay: take the keyboard while typing, hand it back after.
-    #[cfg(target_os = "linux")]
-    if linux::layer_overlay() {
-        linux::set_layer_keyboard(&window, on);
-    }
     // COSMIC: the unmanaged overlay can't get the keyboard, so it's an ordinary window while typing (linux.rs).
     #[cfg(target_os = "linux")]
     if linux::unmanaged_overlay() && was != on {
@@ -360,7 +364,7 @@ fn set_typing(app: AppHandle, window: WebviewWindow, on: bool) {
     if on {
         let _ = window.set_focus();
         #[cfg(target_os = "linux")]
-        if !linux::unmanaged_overlay() && !linux::layer_overlay() {
+        if !linux::unmanaged_overlay() {
             linux::activate(&window);
         }
         // Opened from a hotkey (e.g. after an area snap), Roamies isn't the active app and macOS 14+
@@ -1105,9 +1109,9 @@ fn follow_cursor(app: &AppHandle) {
 fn move_sidekick_to(app: &AppHandle, x: f64, y: f64) {
     let Some(label) = SIDEKICK_OVERLAY.lock().unwrap().clone() else { return };
     let Some(w) = app.get_webview_window(&label) else { return };
-    // A layer surface already covers its output; moving it would detach it from the layer.
+    // The Wayland host owns its own surface; a Tauri overlay only exists after a fallback.
     #[cfg(target_os = "linux")]
-    if linux::layer_overlay() {
+    if LINUX_OVERLAY.lock().unwrap().is_some() {
         return;
     }
     let Ok(Some(mon)) = app.monitor_from_point(x, y) else { return };
@@ -1147,11 +1151,45 @@ fn fix_overlay_size(w: &WebviewWindow, size: tauri::PhysicalSize<u32>) {
     let _ = w.set_max_size(Some(size));
 }
 
-/// Wayland: run the GTK layer-shell overlay host and bridge it to the sidecar.
+/// Wayland: whether the GTK host can run here. It asks the host itself, because layer-shell support depends on
+/// the compositor (GNOME and some others have none), not on the session type alone.
 #[cfg(target_os = "linux")]
-fn spawn_overlay_host(app: &AppHandle) -> tauri::Result<()> {
+fn overlay_host_supported(host: &std::path::Path) -> bool {
+    use std::sync::mpsc;
+    let (tx, rx) = mpsc::channel();
+    let host = host.to_path_buf();
+    std::thread::spawn(move || {
+        let ok = Command::new(&host)
+            .arg("--supported")
+            .env("GDK_BACKEND", "wayland")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        let _ = tx.send(ok);
+    });
+    // A host that hangs must not hang the app at launch.
+    rx.recv_timeout(Duration::from_secs(2)).unwrap_or(false)
+}
+
+/// Wayland: run the GTK layer-shell overlay host and bridge it to the sidecar. Returns whether it is running;
+/// false means build_overlays should build the ordinary Tauri overlays instead.
+#[cfg(target_os = "linux")]
+fn spawn_overlay_host(app: &AppHandle) -> tauri::Result<bool> {
     if LINUX_OVERLAY.lock().unwrap().is_some() {
-        return Ok(());
+        return Ok(true);
+    }
+    if HOST_DISABLED.load(Ordering::SeqCst) {
+        return Ok(false);
+    }
+    // A host that crashes at startup must not respawn forever: after a few tries, keep the Tauri overlay.
+    let attempt = HOST_ATTEMPTS.fetch_add(1, Ordering::SeqCst) + 1;
+    if attempt > 3 {
+        eprintln!("overlay: the host failed {attempt} times, using the ordinary overlay");
+        HOST_DISABLED.store(true, Ordering::SeqCst);
+        return Ok(false);
     }
     let exe = std::env::current_exe()?;
     let dir = exe.parent().map(PathBuf::from).unwrap_or_default();
@@ -1166,25 +1204,46 @@ fn spawn_overlay_host(app: &AppHandle) -> tauri::Result<()> {
         candidates.push(resource.join("dist"));
     }
     let Some(dist) = candidates.into_iter().find(|p| p.is_dir()) else {
-        eprintln!("overlay: no dist directory found");
-        return Ok(());
+        eprintln!("overlay: no dist directory found, using the ordinary overlay");
+        HOST_DISABLED.store(true, Ordering::SeqCst);
+        return Ok(false);
     };
-    eprintln!("overlay: dist {}", dist.display());
     if !host.is_file() {
-        eprintln!("overlay: host binary not found at {}", host.display());
-        return Ok(());
+        eprintln!("overlay: host binary not found at {}, using the ordinary overlay", host.display());
+        HOST_DISABLED.store(true, Ordering::SeqCst);
+        return Ok(false);
     }
-    let mut child = Command::new(&host)
+    if !overlay_host_supported(&host) {
+        eprintln!("overlay: this compositor has no layer-shell support, using the ordinary overlay");
+        HOST_DISABLED.store(true, Ordering::SeqCst);
+        return Ok(false);
+    }
+    eprintln!("overlay: dist {}", dist.display());
+    // A previous host may have exited without being reaped yet; drop it before starting another.
+    if let Some(mut old) = HOST_CHILD.lock().unwrap().take() {
+        let _ = old.kill();
+        let _ = old.wait();
+    }
+    let mut child = match Command::new(&host)
         .arg("--dist")
         .arg(&dist)
         .env("GDK_BACKEND", "wayland")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
-        .spawn()?;
-    let stdin = child.stdin.take();
-    *LINUX_OVERLAY.lock().unwrap() = stdin;
-    if let Some(out) = child.stdout.take() {
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
+            eprintln!("overlay: couldn't start the host: {e}, using the ordinary overlay");
+            HOST_DISABLED.store(true, Ordering::SeqCst);
+            return Ok(false);
+        }
+    };
+    *LINUX_OVERLAY.lock().unwrap() = child.stdin.take();
+    let out = child.stdout.take();
+    *HOST_CHILD.lock().unwrap() = Some(child);
+    if let Some(out) = out {
         let app2 = app.clone();
         std::thread::spawn(move || {
             use std::io::{BufRead, BufReader};
@@ -1200,20 +1259,50 @@ fn spawn_overlay_host(app: &AppHandle) -> tauri::Result<()> {
                 }
             }
             *LINUX_OVERLAY.lock().unwrap() = None;
+            if !sidecar::QUITTING.load(Ordering::SeqCst) {
+                eprintln!("overlay: host exited");
+            }
         });
     }
-    std::thread::spawn(move || {
+    Ok(true)
+}
+
+/// Stop the host on Quit or Exit, so it cannot outlive the app and leave a ghost overlay.
+#[cfg(target_os = "linux")]
+fn stop_overlay_host() {
+    if let Some(mut stdin) = LINUX_OVERLAY.lock().unwrap().take() {
+        let _ = writeln!(stdin, "{{\"type\":\"quit\"}}");
+        let _ = stdin.flush();
+    }
+    if let Some(mut child) = HOST_CHILD.lock().unwrap().take() {
+        let _ = child.kill();
         let _ = child.wait();
-    });
-    Ok(())
+    }
+}
+
+/// Reap a host that exited on its own, so a crash leaves no zombie behind.
+#[cfg(target_os = "linux")]
+fn reap_overlay_host() {
+    let exited = {
+        let mut child = HOST_CHILD.lock().unwrap();
+        match child.as_mut() {
+            Some(c) => matches!(c.try_wait(), Ok(Some(_))),
+            None => false,
+        }
+    };
+    if exited {
+        *HOST_CHILD.lock().unwrap() = None;
+        *LINUX_OVERLAY.lock().unwrap() = None;
+    }
 }
 
 fn build_overlays(app: &AppHandle) -> tauri::Result<()> {
-    // Wayland: a Tauri toplevel cannot be click-through on Hyprland (input regions on toplevels
-    // are ignored by design), so the overlay is a GTK layer-shell host process instead.
+    // Wayland: a Tauri toplevel cannot be click-through on Hyprland (input regions on toplevels are ignored by
+    // design), so try the GTK layer-shell host first. It says no on compositors without layer-shell, and after
+    // repeated crashes, so the ordinary Tauri overlay remains the fallback.
     #[cfg(target_os = "linux")]
-    if linux::layer_overlay() {
-        return spawn_overlay_host(app);
+    if linux::wayland() && !HOST_DISABLED.load(Ordering::SeqCst) && spawn_overlay_host(app)? {
+        return Ok(());
     }
     for (label, w) in app.webview_windows() {
         if is_overlay(&label) {
@@ -1245,12 +1334,6 @@ fn build_overlays(app: &AppHandle) -> tauri::Result<()> {
         if mine.iter().any(|id| id == "\"sidekick\"") {
             *SIDEKICK_OVERLAY.lock().unwrap() = Some(label.clone());
         }
-        // Wayland: a layer surface honours the input region that Hyprland ignores on toplevels,
-        // so the overlay is built hidden and turned into an overlay layer before it is shown.
-        #[cfg(target_os = "linux")]
-        let layer = linux::layer_overlay();
-        #[cfg(not(target_os = "linux"))]
-        let layer = false;
         // COSMIC: built hidden, then shown unmanaged (linux.rs set_unmanaged).
         #[cfg(target_os = "linux")]
         let unmanaged = linux::unmanaged_overlay();
@@ -1258,7 +1341,7 @@ fn build_overlays(app: &AppHandle) -> tauri::Result<()> {
         let unmanaged = false;
         let b = WebviewWindowBuilder::new(app, label, WebviewUrl::App("desktop.html".into()))
             .title("Roamies")
-            .visible(!unmanaged && !layer)
+            .visible(!unmanaged)
             .transparent(true)
             .decorations(false)
             .shadow(false)
@@ -1281,13 +1364,7 @@ fn build_overlays(app: &AppHandle) -> tauri::Result<()> {
         w.set_ignore_cursor_events(true)?;
         #[cfg(target_os = "linux")]
         {
-            if layer {
-                let ok = linux::init_layer_shell(&w);
-                eprintln!("[layer] overlay {} layer={ok}", w.label());
-                let _ = w.show();
-            } else {
-                linux::keep_unmaximized(&w);
-            }
+            linux::keep_unmaximized(&w);
             if unmanaged {
                 linux::set_unmanaged(&w, true, false);
             }
@@ -1563,11 +1640,14 @@ fn watch_screens(app: AppHandle) {
         let app2 = app.clone();
         // Monitor queries belong on the main thread (see pump_cursor), and so does making windows.
         let _ = app.run_on_main_thread(move || {
-            // Wayland: the GTK layer-shell host owns the overlay, so there are no Tauri overlay
-            // windows to count; the layer surface follows the output by itself.
+            // Wayland: while the GTK host owns the overlay, it follows the output by itself. Reap it first, so a
+            // crash falls through to the Tauri overlay instead of leaving no overlay at all.
             #[cfg(target_os = "linux")]
-            if linux::layer_overlay() && LINUX_OVERLAY.lock().unwrap().is_some() {
-                return;
+            {
+                reap_overlay_host();
+                if LINUX_OVERLAY.lock().unwrap().is_some() {
+                    return;
+                }
             }
             // Notches only change with the screens, so this 3 s pass keeps the cache that safe_js reads.
             #[cfg(target_os = "macos")]
@@ -2115,6 +2195,8 @@ fn main() {
         .run(|_, e| {
             if matches!(e, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
                 sidecar::QUITTING.store(true, Ordering::SeqCst);
+                #[cfg(target_os = "linux")]
+                stop_overlay_host();
             }
         });
 }
