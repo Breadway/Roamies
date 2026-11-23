@@ -1061,7 +1061,7 @@ A drawing stays until it's cleared, the window changes or the next one replaces 
     },
     {
       name: 'run_command', description: `Run a shell command in ${where} and return its output, for what other tools can't do (counting, sorting, mdfind to find files by name, git, moving or copying). Open things with open, and make or edit files with write_file (several: one call each, in the same turn): never sed -i or tee, and never a shell loop that makes files, which always needs a yes. A > redirect into a new file is fine; overwriting a file or changing things asks the user first, which is slow. Anything that may take longer than a minute or depends on a slow network (git push, clones, downloads, API reads) goes in the background: set background true, then poll with command_status and command_output. A background job keeps running if the app closes.`,
-      parameters: z.object({ command: z.string(), background: z.boolean().optional().describe('Start it as a background job and return its id instead of waiting') }), executionMode: 'sequential', timeoutMs: 190_000, // up to 2 min to answer, then the 60 s run
+      parameters: z.object({ command: z.string(), background: z.boolean().optional().describe('Start it as a background job and return its id instead of waiting') }), executionMode: 'sequential', timeoutMs: 190_000, // up to 3 min to answer
       execute: async ({ command, background }, ctx) => {
         if (!allowActions()) throw new Error(actionsOff);
         // With the Linux helper there is a real tool for this: one that respects the window the user means.
@@ -1079,7 +1079,7 @@ A drawing stays until it's cleared, the window changes or the next one replaces 
           return `Started background job ${j.id} (pid ${j.pid}). It keeps running after this call and after the app closes. Check it with command_status, read new output with command_output, stop it with command_stop.`;
         }
         const [sh, shArgs, shOpts] = shellFor(command);
-        const r = await run(sh, shArgs, { ...shOpts, cwd: workdir, env: { ...process.env, ...GIT_SAFE } });
+        const r = await run(sh, shArgs, { ...shOpts, cwd: workdir, env: { ...process.env, ...GIT_SAFE }, timeout: 180_000 });
         const out = clip((r.stdout + (r.stderr ? `\n[stderr]\n${r.stderr}` : '')).trim() || '(no output)', 12_000);
         if (r.err && r.err.code !== 0) throw new Error(`Exit ${r.err.code ?? r.err.signal}\n${out}`);
         return out;
