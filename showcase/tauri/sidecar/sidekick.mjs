@@ -12,6 +12,7 @@ import { agentsRoot, createAgents, holdAfterLaunch, newsDesk, wantsAgent } from 
 import { agentEvents, stallWatch } from './agentstream.mjs';
 import { createOpencodeBridge } from './opencode-bridge.mjs';
 import { createBreadboardChat } from './breadboard-chat.mjs';
+import { createCommandJobs } from './commands.mjs';
 import { CATALOG_PROVIDERS, createCatalogs } from './catalogs.mjs';
 import {
   AUTH_PROVIDERS, AuthStorage, CHATGPT_USAGE_URL, OPENAI_CHATGPT_KEY, apiKeyStorageKeys, claudeCodeEnv, dualAuthProvider, ensureClaudeCodeBinary, getAuthStorageKeys, getContextWindow, getDefaultModel, getModel,
@@ -647,6 +648,7 @@ const userName = (() => {
 // ---------- tools ----------
 // The open request's voice, if replies are spoken: draw's beat lines are said on it, in order with the reply.
 let turnVoice = null;
+const commands = createCommandJobs({ dir: path.join(DATA_DIR, 'commands'), log: (kind, data) => { try { logLine(kind, data); } catch {} } });
 const { tools, hands, whereNow, frontNow: frontData, frontBounds, ink, nextTurn } = createTools({
   focus: HANDS_OK ? { start: (m, t) => startFocus(m, t), stop: () => stopFocus() } : null,
   firedReminders: () => firedReminders,
@@ -664,6 +666,7 @@ const { tools, hands, whereNow, frontNow: frontData, frontBounds, ink, nextTurn 
   workdir: WORKDIR,
   pointScale: () => pointScale(config.model ?? ''),
   jobs: { changed: () => { scheduleJobs(); panel(); }, run: (id) => runJob(getJob(id), { now: true }) },
+  commands,
   skills: { changed: () => panel(), used: (s) => { skillsUsed.add(s.slug); } },
   saveAvatarPin: (pin) => { if (pin) config.avatarPin = pin; else delete config.avatarPin; saveConfig(); },
   // web_search's side search runs on the chat's own Anthropic sign-in; other providers use the keyless engines.
@@ -851,6 +854,9 @@ function anim(name, args = {}) {
     case 'search_files': return { tool: 'read', variant: 'search', label: 'searching for', detail: `"${String(args.pattern).slice(0, 24)}"` };
     case 'write_file': { const edit = existsSync(expand(args.path ?? '')); return { tool: 'write', variant: edit ? 'edit' : 'create', label: edit ? 'editing' : 'creating', detail: base(args.path) }; }
     case 'run_command': return { tool: 'run', variant: 'progress', label: 'running', detail: String(args.command).slice(0, 40) };
+    case 'command_status': return { tool: 'run', variant: 'progress', label: 'checking', detail: 'a background job' };
+    case 'command_output': return { tool: 'read', variant: 'many', label: 'reading', detail: 'a job\'s output' };
+    case 'command_stop': return { tool: 'run', variant: 'progress', label: 'stopping', detail: 'a background job' };
     case 'web_fetch': return { tool: 'web', variant: 'fetch', label: 'reading', detail: host(args.url) };
     case 'web_search': return { tool: 'web', variant: 'search', label: 'searching', detail: 'the web' };
     case 'remember_commitment': return { tool: 'write', variant: 'create', label: 'saving', detail: 'a reminder' };

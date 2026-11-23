@@ -280,7 +280,7 @@ export function oneYesNoAtATime(ask) {
   };
 }
 
-export function createTools({ allowActions, ui, ask, openUrl, onCommitments, focus = null, firedReminders = () => [], showList, fmtWhen, commitmentsText, userName, onPlan = () => {}, speak = () => false, onHandoff = () => {}, watchClicks = () => {}, onInkGone = () => {}, askShell = async () => ({ ok: false, error: 'Roamies isn\'t running.' }), workdir = HOME, own = null, sideSearch = async () => null, pointScale = () => 'pixels', skipAllow = () => false, jobs = null, skills = null, saveAvatarPin = () => {} }) {
+export function createTools({ allowActions, ui, ask, openUrl, onCommitments, focus = null, firedReminders = () => [], showList, fmtWhen, commitmentsText, userName, onPlan = () => {}, speak = () => false, onHandoff = () => {}, watchClicks = () => {}, onInkGone = () => {}, askShell = async () => ({ ok: false, error: 'Roamies isn\'t running.' }), workdir = HOME, own = null, sideSearch = async () => null, pointScale = () => 'pixels', skipAllow = () => false, jobs = null, skills = null, commands = null, saveAvatarPin = () => {} }) {
   // Relative paths (and run_command) start in workdir: ~/Roamies for the chat, its own folder for an agent.
   const at = (p) => { const s = String(p ?? ''); return /^~(?=$|\/|\\)/.test(s) || path.isAbsolute(s) || /^[a-z]:[\\/]/i.test(s) ? s : path.join(workdir, s); };
   const where = workdir === HOME ? "the user's home folder" : `its working folder (${workdir})`;
@@ -874,7 +874,7 @@ export function createTools({ allowActions, ui, ask, openUrl, onCommitments, foc
       },
       {
         name: 'act_in_app',
-        description: "Do things in another app: click, fill forms, pick from dropdowns and date pickers, scroll, press keys. Steps run in order: put a whole task in one call. {do:'click_text', text}: a link, button or tab by its visible words (no read_window needed). {do:'fill', field, text}: one text field by its label, placeholder or id; replaces its text and checks it took (never click a label and type). {do:'choose', field, option}: an option in a dropdown, menu, type-to-search box or picker, however long the list (never scroll a list yourself). {do:'hover', text, near} (or id, or x, y): rests the pointer to show hidden controls (a ⋯ menu), then click_text what appears, in the same call. {do:'scroll', direction, amount, text or id}: only for content that loads as you scroll; to_end: true keeps going until a feed stops loading (things already on the page need no scrolling: click_text, fill and draw find them). {do:'click', id}; {do:'key', key} ('return', 'tab', 'escape'); {do:'type', text} only with the cursor already in a field; {do:'click_at', x, y} screenshot pixels, last resort; {do:'tab', text} (or workspace + index, or a control id) switches browser tabs through the browser itself, not by clicking the sidebar; {do:'workspace', name} switches a browser workspace and reports the tab it lands on; {do:'open_tab', url, workspace} opens a page there; {do:'close_tab', text|url|index, workspace} closes one; {do:'move_tab', text|url|index, workspace, to} moves one by reopening it there; {do:'workspace_create', name} and {do:'workspace_rename', workspace, name} change the workspace list; {do:'wait', seconds}. near: words from one item (its author, a post's first words) when many controls look alike (a Reply under every post). Dates: fill them as the page writes them (10/30/2026); if a calendar opens, choose the month and year, then click_text the day. Web addresses: use open, not the address bar; to search a site, open its search URL (youtube.com/results?search_query=…) unless asked to use its box (then fill it and press return). The result shows the window after the steps, with fresh ids and values: check it there, not with read_window. Every item on a long page: to_end if it loads more, one read_window, then one call doing every item with near; never survey a page by scrolling and screenshots. Never pay, send or delete unless asked for exactly that; pointing at a button isn't a request to click it. Delete, pay, send and sign-out clicks ask the user themselves, so when asked to click one, call this straight away instead of asking.",
+        description: "Do things in another app: click, fill forms, pick from dropdowns and date pickers, scroll, press keys. Steps run in order: put a whole task in one call. {do:'click_text', text}: a link, button or tab by its visible words (no read_window needed). {do:'fill', field, text}: one text field by its label, placeholder or id; replaces its text, retries beside a browser label, and reads the value back (never click a label and type). If nothing takes it, the step fails instead of pretending. {do:'choose', field, option}: an option in a dropdown, menu, type-to-search box or picker, however long the list (never scroll a list yourself). {do:'hover', text, near} (or id, or x, y): rests the pointer to show hidden controls (a ⋯ menu), then click_text what appears, in the same call. {do:'scroll', direction, amount, text or id}: only for content that loads as you scroll; to_end: true keeps going until a feed stops loading (things already on the page need no scrolling: click_text, fill and draw find them). {do:'click', id}; {do:'key', key} ('return', 'tab', 'escape'); {do:'type', text} only with the cursor already in a field, and it is read back too; {do:'click_at', x, y} screenshot pixels, last resort; {do:'tab', text} (or workspace + index, or a control id) switches browser tabs through the browser itself, not by clicking the sidebar; {do:'workspace', name} switches a browser workspace and reports the tab it lands on; {do:'open_tab', url, workspace} opens a page there; {do:'close_tab', text|url|index, workspace} closes one; {do:'move_tab', text|url|index, workspace, to} moves one by reopening it there; {do:'workspace_create', name} and {do:'workspace_rename', workspace, name} change the workspace list; {do:'wait', seconds}. near: words from one item (its author, a post's first words) when many controls look alike (a Reply under every post). Dates: fill them as the page writes them (10/30/2026); if a calendar opens, choose the month and year, then click_text the day. Web addresses: use open, not the address bar; to search a site, open its search URL (youtube.com/results?search_query=…) unless asked to use its box (then fill it and press return). The result shows the window after the steps, with fresh ids and values: check it there, not with read_window. Every item on a long page: to_end if it loads more, one read_window, then one call doing every item with near; never survey a page by scrolling and screenshots. Never pay, send or delete unless asked for exactly that; pointing at a button isn't a request to click it. Delete, pay, send and sign-out clicks ask the user themselves, so when asked to click one, call this straight away instead of asking.",
         parameters: z.object({
           target: z.string().optional(),
           // Steps sent as JSON text, or one step on its own, as some free models do (#159), are read as the list they mean.
@@ -1060,9 +1060,9 @@ A drawing stays until it's cleared, the window changes or the next one replaces 
       },
     },
     {
-      name: 'run_command', description: `Run a shell command in ${where} and return its output, for what other tools can't do (counting, sorting, mdfind to find files by name, git, moving or copying). Open things with open, and make or edit files with write_file (several: one call each, in the same turn): never sed -i or tee, and never a shell loop that makes files, which always needs a yes. A > redirect into a new file is fine; overwriting a file or changing things asks the user first, which is slow.`,
-      parameters: z.object({ command: z.string() }), executionMode: 'sequential', timeoutMs: 190_000, // up to 2 min to answer, then the 60 s run
-      execute: async ({ command }, ctx) => {
+      name: 'run_command', description: `Run a shell command in ${where} and return its output, for what other tools can't do (counting, sorting, mdfind to find files by name, git, moving or copying). Open things with open, and make or edit files with write_file (several: one call each, in the same turn): never sed -i or tee, and never a shell loop that makes files, which always needs a yes. A > redirect into a new file is fine; overwriting a file or changing things asks the user first, which is slow. Anything that may take longer than a minute or depends on a slow network (git push, clones, downloads, API reads) goes in the background: set background true, then poll with command_status and command_output. A background job keeps running if the app closes.`,
+      parameters: z.object({ command: z.string(), background: z.boolean().optional().describe('Start it as a background job and return its id instead of waiting') }), executionMode: 'sequential', timeoutMs: 190_000, // up to 2 min to answer, then the 60 s run
+      execute: async ({ command, background }, ctx) => {
         if (!allowActions()) throw new Error(actionsOff);
         // With the Linux helper there is a real tool for this: one that respects the window the user means.
         if (process.platform === 'linux' && HANDS && /(^|[;&|]\s*)(sudo\s+)?hyprctl\b/.test(String(command))) {
@@ -1073,11 +1073,47 @@ A drawing stays until it's cleared, the window changes or the next one replaces 
         if (v.level === ASK && !(await confirm(`Run \`${command.length > 70 ? command.slice(0, 67) + '…' : command}\`?${v.reason ? ' ' + v.reason : ''}`, ctx))) {
           throw new Error(`${userName} said no, so the command didn't run.`);
         }
+        if (background) {
+          if (!commands) throw new Error('Background jobs are not available in this run.');
+          const j = commands.start({ command, cwd: workdir });
+          return `Started background job ${j.id} (pid ${j.pid}). It keeps running after this call and after the app closes. Check it with command_status, read new output with command_output, stop it with command_stop.`;
+        }
         const [sh, shArgs, shOpts] = shellFor(command);
         const r = await run(sh, shArgs, { ...shOpts, cwd: workdir, env: { ...process.env, ...GIT_SAFE } });
         const out = clip((r.stdout + (r.stderr ? `\n[stderr]\n${r.stderr}` : '')).trim() || '(no output)', 12_000);
         if (r.err && r.err.code !== 0) throw new Error(`Exit ${r.err.code ?? r.err.signal}\n${out}`);
         return out;
+      },
+    },
+    {
+      name: 'command_status', description: 'Check a background command started by run_command with background true. Returns running, done with its exit code, or lost if it vanished without one.',
+      parameters: z.object({ id: z.string().describe('Job id from run_command') }),
+      execute: async ({ id }) => {
+        if (!commands) throw new Error('Background jobs are not available in this run.');
+        const s = commands.status(id);
+        const when = s.ended != null ? ` finished after ${Math.max(0, Math.round((s.ended - s.started) / 1000))}s` : '';
+        const code = s.code != null ? `, exit ${s.code}` : '';
+        return `Job ${s.id} is ${s.status}${code}${when}. ${s.bytes} bytes of output. ${s.cwd}${s.command ? `\n$ ${s.command.length > 120 ? s.command.slice(0, 117) + '…' : s.command}` : ''}`;
+      },
+    },
+    {
+      name: 'command_output', description: 'Read a background command\'s output from an offset and get the next offset. Poll with it until the status is done, then read the last chunk for the result.',
+      parameters: z.object({ id: z.string().describe('Job id from run_command'), offset: z.number().int().min(0).optional().describe('Byte offset to start at (default 0)'), max: z.number().int().min(1).max(200000).optional().describe('Most bytes to return (default 12000)') }),
+      execute: async ({ id, offset, max }) => {
+        if (!commands) throw new Error('Background jobs are not available in this run.');
+        const r = commands.output(id, { offset, max });
+        const code = r.code != null ? `, exit ${r.code}` : '';
+        const tail = r.eof ? '' : `\n(continue at offset ${r.nextOffset})`;
+        return `Job ${r.id} is ${r.status}${code}.\n${r.chunk || '(no output yet)'}${tail}`;
+      },
+    },
+    {
+      name: 'command_stop', description: 'Stop a background command and its child processes. The output and exit status stay readable.',
+      parameters: z.object({ id: z.string().describe('Job id from run_command') }),
+      execute: async ({ id }) => {
+        if (!commands) throw new Error('Background jobs are not available in this run.');
+        const r = commands.stop(id);
+        return r.signalled ? `Stopping job ${r.id}.` : `Job ${r.id} was already finished or gone.`;
       },
     },
     // GG Coder's own web tools: search with a side search or keyless engines, pages as Markdown with offset to read on.

@@ -7,10 +7,13 @@
 import { Agent } from '@kenkaiiii/gg-agent';
 import { pointScale, registerRuntimeModels } from '@kenkaiiii/gg-core';
 import { pathToFileURL } from 'node:url';
+import path from 'node:path';
 import { z } from 'zod';
 import { ClaudeCodeAgent } from './claudecode.mjs';
 import { agentEvents } from './agentstream.mjs';
 import { createTools } from './tools.mjs';
+import { DATA_DIR } from './datadir.mjs';
+import { createCommandJobs } from './commands.mjs';
 import { leanTools } from './lean.mjs';
 import { agentSystem, checkFinish, toolsFor } from './agents.mjs';
 
@@ -68,10 +71,12 @@ async function run({ agent: a, model: md, content }) {
   allow = a.allow !== false;
   route = md.route === 'claude-code' ? 'claude-code' : 'api';
   let result = null;
+  const commands = createCommandJobs({ dir: path.join(DATA_DIR, 'commands') });
   const { tools: all } = createTools({
     allowActions: () => allow, ui: () => {}, openUrl: () => {}, onCommitments: () => {}, showList: () => {}, fmtWhen: (ms) => new Date(ms).toLocaleString(),
     commitmentsText: () => '', userName: a.userName || 'The user', workdir: a.dir, own: a.dir, pointScale: () => pointScale(md.model ?? ''),
     ask: (opts, signal) => request({ t: 'ask', question: String(opts?.placeholder ?? '').slice(0, 300) }, signal).then((yes) => (yes ? 'yes' : null)),
+    commands,
     // web_search's side search runs on the same Anthropic sign-in as this agent; other providers use the keyless engines.
     sideSearch: async () => {
       if (md.provider !== 'anthropic') return null;

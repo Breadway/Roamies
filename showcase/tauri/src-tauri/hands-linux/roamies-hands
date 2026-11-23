@@ -21,6 +21,7 @@ import os
 import re
 import struct
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -772,8 +773,39 @@ def walk(acc, scale, origin, items, texts, elsewhere, depth=0):
         return
 
 
+_atspi_ready = False
+
+
+def ensure_atspi_bus():
+    """A stale at-spi bus kills the process on the first Atspi call. Check the socket first, and restart the
+    service once if it refuses connections. Returns False so callers fall back to OCR instead of crashing."""
+    global _atspi_ready
+    if _atspi_ready:
+        return True
+    for attempt in range(2):
+        addr = None
+        if shutil.which("gdbus"):
+            r = sh(["gdbus", "call", "--session", "--dest", "org.a11y.Bus", "--object-path", "/org/a11y/bus", "--method", "org.a11y.Bus.GetAddress"])
+            m = re.search(r"unix:path=([^'\"]+)", r.stdout or "")
+            addr = m.group(1) if m else None
+        if addr:
+            try:
+                probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                probe.settimeout(1.0)
+                probe.connect(addr)
+                probe.close()
+                _atspi_ready = True
+                return True
+            except Exception:
+                pass
+        if attempt == 0:
+            sh(["systemctl", "--user", "restart", "at-spi-dbus-bus.service"])
+            time.sleep(1.2)
+    return False
+
+
 def atspi_ui(win):
-    if Atspi is None:
+    if Atspi is None or not ensure_atspi_bus():
         return None
     app = atspi_app(win.get("pid", 0), (win.get("app") or "").lower())
     if app is None:
@@ -835,7 +867,7 @@ def tsv_words(png, origin, scale):
     return words
 
 
-BROWSER = re.compile(r"zen|firefox|chrom|brave|mozilla|vivaldi", re.I)
+BROWSER = re.compile(r"zen|firefox|chrom|brave|mozilla|vivaldi|librewolf|edge", re.I)
 
 
 def browser_sidebar(win):
@@ -975,7 +1007,7 @@ def press_combo(combo):
     return True
 
 
-def type_text(text, xwayland=False):
+def type_text(text, xwayland=False, prefer=None):
     if not text:
         return True
     # wtype sends Wayland keys; XWayland apps decode them with the wrong keymap (letters became digits and
@@ -992,11 +1024,22 @@ def type_text(text, xwayland=False):
     def via_clipboard():
         if not shutil.which("wl-copy"):
             return False
-        sh(["wl-copy", "--", text])
+        # wl-copy forks a server that keeps the selection (and the pipe it inherited) alive; capturing its
+        # output made this wait forever. Give it no pipes and treat a timeout as the normal serving case.
+        try:
+            subprocess.run(["wl-copy", "--", text], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+        except Exception:
+            return False
         press_combo("ctrl+v")
         return True
 
     order = [via_ydotool, via_clipboard, via_wtype] if xwayland else [via_wtype, via_clipboard, via_ydotool]
+    if prefer == "paste":
+        order = [via_clipboard, via_wtype, via_ydotool]
+    elif prefer == "type":
+        order = [via_ydotool, via_wtype, via_clipboard] if xwayland else [via_wtype, via_ydotool, via_clipboard]
     for attempt in order:
         if attempt():
             return True
@@ -1056,6 +1099,138 @@ def find_control(win, text=None, cid=None, field=False):
         return None
     candidates.sort(key=lambda t: (-t[0], 1 if t[1].get("offscreen") else 0))
     return candidates[0][1]
+
+
+def find_field_candidates(win, text):
+    """Every control that could be the named field, best first. A browser page often gives only OCR labels,
+    not real entries, so labels stay in the list and the caller tries the input beside them."""
+    q = " ".join(str(text or "").split()).lower()
+    if not q:
+        return []
+    words = [w for w in q.split(" ") if w]
+    fields, labels = [], []
+    for c in controls_of(win):
+        label = " ".join((str(c.get("label") or "") + " " + str(c.get("value") or "")).split()).lower()
+        if not label:
+            continue
+        role = str(c.get("role") or "").lower()
+        if role in ("text field", "entry", "password text", "combo box") and (q in label or label in q):
+            fields.append(c)
+        elif label == q or q in label:
+            labels.append(c)
+        elif len(words) > 1 and all(w in label for w in words):
+            labels.append(c)
+    if fields:
+        return fields[:2]
+    if not labels:
+        # One word of a two-word label can be enough when OCR split the line.
+        for c in controls_of(win):
+            label = " ".join(str(c.get("label") or "").split()).lower()
+            if label and words and label in words:
+                labels.append(c)
+    return labels[:3]
+
+
+def field_points(win, c):
+    """Where the input probably is. A real entry is its own box; an OCR label usually sits left of (or above)
+    the input, so try just to its right, then the label itself, then below."""
+    x, y, w, h = c["bounds"]
+    cx, cy = center(c["bounds"])
+    role = str(c.get("role") or "").lower()
+    if role in ("text field", "entry", "password text", "combo box"):
+        return [(cx, cy)]
+    bx, by, bw, bh = win["bounds"]
+    points = [(x + w + 28, cy), (cx, cy), (cx, y + h + 20), (x + w + 28, y + h + 20)]
+    out = []
+    for px, py in points:
+        if bx <= px <= bx + bw and by <= py <= by + bh and (px, py) not in out:
+            out.append((px, py))
+    return out
+
+
+def clipboard_text():
+    if not shutil.which("wl-paste"):
+        return None
+    try:
+        r = subprocess.run(["wl-paste", "--no-newline"], capture_output=True, text=True, timeout=2)
+        return r.stdout if r.returncode == 0 else None
+    except Exception:
+        return None
+
+
+def value_took(text):
+    """Select the focused field and copy it. This is the only read-back that sees a value a browser will not
+    expose to accessibility or OCR, and it is what a person would check by hand."""
+    want = " ".join(str(text or "").split())
+    if not want or not shutil.which("wl-paste"):
+        return False
+    press_combo("ctrl+a")
+    time.sleep(0.04)
+    press_combo("ctrl+c")
+    time.sleep(0.12)
+    got = clipboard_text()
+    press_combo("right")  # collapse the selection, leaving the caret at the end
+    return got is not None and " ".join(got.split()) == want
+
+
+def visible_took(win, text, copy=False):
+    """Did the text really land? A browser may accept the keys and show nothing, so read it back."""
+    needle = " ".join(str(text or "").split()).lower()
+    if not needle:
+        return True
+    if copy and value_took(text):
+        return True
+    for _ in range(3):
+        hay = norm_text(ui_data(win))
+        if needle in hay or (len(needle) > 24 and needle[:24] in hay):
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def fill_field(win, field, text):
+    browser = bool(BROWSER.search((win.get("app") or "") + " " + (win.get("exe") or "")))
+    controls = find_field_candidates(win, field) if field else []
+    if field and not controls:
+        raise ValueError(f"couldn't find a field called {field!r} in {win.get('app')}")
+    if not field:
+        raise ValueError("fill needs a field name")
+    attempts = 0
+    seen = set()
+    for c in controls:
+        for x, y in field_points(win, c):
+            for method in (("paste", "type") if browser else ("type", "paste")):
+                if (x, y, method) in seen:
+                    continue
+                seen.add((x, y, method))
+                attempts += 1
+                if attempts > 8:
+                    break
+                step_bounds([x - 2, y - 2, 4, 4], "fill")
+                click_at(x, y)
+                time.sleep(0.18)
+                press_combo("ctrl+a")
+                time.sleep(0.05)
+                if not type_text(text, bool(win.get("xwayland")), prefer=method):
+                    continue
+                if visible_took(win, text, copy=browser):
+                    return "filled (verified)"
+    raise ValueError(f"couldn't put text in {field!r}: nothing visible took it after {attempts} tries. Try click_at on the input itself, then act_in_app {{do:'type'}}.")
+
+
+def type_in_focus(win, text):
+    browser = bool(BROWSER.search((win.get("app") or "") + " " + (win.get("exe") or "")))
+    # Only a browser gets select-all first: in a terminal Ctrl+A moves to the start of the line and the
+    # clipboard check's Ctrl+C would interrupt whatever is running.
+    for method in (("paste", "type") if browser else ("type",)):
+        if browser:
+            press_combo("ctrl+a")
+            time.sleep(0.04)
+        if not type_text(text, bool(win.get("xwayland")), prefer=method):
+            continue
+        if visible_took(win, text, copy=browser):
+            return "typed (verified)"
+    raise ValueError("couldn't type into the focused field: the text didn't show up. Click the field first, then use fill with its name.")
 
 
 def center(bounds):
@@ -1429,39 +1604,9 @@ def cmd_act(plan_json):
             elif do in ("fill", "type"):
                 text = step.get("text", "")
                 if do == "fill":
-                    field = step.get("field")
-                    c = find_control(w, text=field, field=True) if field else last_clicked
-                    if c:
-                        x, y = center(c["bounds"])
-                        step_bounds(c["bounds"], "click")
-                        click_at(x, y)
-                        time.sleep(0.12)
-                        last_clicked = c
-                    press_combo("ctrl+a")
-                    time.sleep(0.05)
-                before_type = norm_text(ui_data(w))
-                if not type_text(text, bool(w.get("xwayland"))):
-                    raise ValueError("couldn't type")
-                # Read it back: an exact match is proof; otherwise a second look catches a slow redraw.
-                verified = changed = False
-                for attempt in range(4):
-                    time.sleep(0.3)
-                    read = ui_data(w)
-                    after_type = norm_text(read)
-                    verified = bool(text) and " ".join(str(text).split()).lower() in after_type
-                    changed = after_type != before_type
-                    if verified or changed:
-                        break
-                    # A field can lose the race to take the click: click it again, clear it, retype once.
-                    if do == "fill" and attempt == 1 and field:
-                        c = find_control(w, text=field, field=True)
-                        if c:
-                            click_at(*center(c["bounds"]))
-                            time.sleep(0.2)
-                            press_combo("ctrl+a")
-                            time.sleep(0.05)
-                            type_text(text, bool(w.get("xwayland")))
-                done.append(("filled" if do == "fill" else "typed") + (" (verified)" if verified else " (the window changed)" if changed else " (no visible change; check it)"))
+                    done.append(fill_field(w, step.get("field"), text))
+                else:
+                    done.append(type_in_focus(w, text))
             elif do == "key":
                 key = step.get("combo") or step.get("key") or ""
                 if not press_combo(key):
