@@ -48,8 +48,9 @@ export function createCommandJobs({ dir, now = Date.now, spawn = realSpawn, log 
     if (!text) throw new Error('The command is empty.');
     const id = newId();
     const script = scriptPath(id), out = logPath(id), exit = exitPath(id);
-    // The subshell makes `exit` inside the command only leave the command, never skip the exit-code write.
-    fs.writeFileSync(script, `#!/bin/bash\nset -o pipefail\n(\n${text}\n)\n__roamies_code=$?\nprintf '%s' "$__roamies_code" > ${quote(exit)}\nexit "$__roamies_code"\n`, { mode: 0o700 });
+    // An EXIT trap writes the code even when the command ends with `exit`, and leaves the command itself
+    // unwrapped so its own parentheses and quotes are never unbalanced by the wrapper.
+    fs.writeFileSync(script, `#!/bin/bash\nset -o pipefail\n__roamies_done() {\n  local code=$?\n  printf '%s' "$code" > ${quote(exit)}\n}\ntrap __roamies_done EXIT\n${text}\n`, { mode: 0o700 });
     const fd = fs.openSync(out, 'a');
     let child;
     try {
@@ -99,10 +100,13 @@ export function createCommandJobs({ dir, now = Date.now, spawn = realSpawn, log 
     if (!j) throw new Error(`No command job ${id} is on record.`);
     const code = readExit(j);
     if (code !== null) {
-      if (j.status !== 'done') {
-        j.status = 'done';
-        j.code = code;
-        j.ended = now();
+      const stopped = j.stopRequested && (j.ended ?? now()) >= j.stopRequested;
+      const want = stopped ? 'stopped' : 'done';
+      const value = stopped && code === 0 ? 143 : code; // bash's EXIT trap can report 0 after SIGTERM
+      if (j.status !== want || j.code !== value) {
+        j.status = want;
+        j.code = value;
+        j.ended = j.ended ?? now();
         save(j);
       }
     } else if (!running(j.pid)) {
@@ -153,7 +157,11 @@ export function createCommandJobs({ dir, now = Date.now, spawn = realSpawn, log 
     } catch {
       try { process.kill(j.pid, 'SIGTERM'); signalled = true; } catch {}
     }
-    if (signalled) log('command_stop', { id, pid: j.pid });
+    if (signalled) {
+      j.stopRequested = now();
+      save(j);
+      log('command_stop', { id, pid: j.pid });
+    }
     return { id, signalled };
   }
 

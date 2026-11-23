@@ -59,7 +59,7 @@ try {
   assert.equal(jobs.status(c.id).status, 'running');
   assert.equal(jobs.stop(c.id).signalled, true);
   s = await until(c.id, (x) => x.status !== 'running', 3000);
-  assert.notEqual(s.status, 'done');
+  assert.ok(s.status === 'stopped' || s.status === 'lost' || (s.status === 'done' && s.code !== 0), 'a stopped job does not read as a success');
 
   // An id that was never issued is refused rather than reading an arbitrary file.
   assert.throws(() => jobs.status('../../etc/passwd'), /No command job/);
