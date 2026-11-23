@@ -37,7 +37,6 @@ import { KEY_NAME as SYNC_KEY, MIN_PASSPHRASE, checkFolder, folderReady, merge a
 import { EMOTES, EchoFilter, ReplyStream } from './reply.mjs';
 import { downloadModel, isReady, modelDir, sizeLabel, totalBytes } from './voicemodel.mjs';
 import { copyText, createTools, expand, fitImage, imageBlock, oneYesNoAtATime, winOpen } from './tools.mjs';
-import { createUsageLog } from './usage.mjs';
 import { describeMarks } from './marks.mjs';
 import { faviconFor } from './draw.mjs';
 import { QUESTIONS, openNote, answerTurn, wantsSkip, endsChat, splitTurn, plain, stripNote, tourBeats, goalFrom, showcaseBeats } from './intro.mjs';
@@ -67,6 +66,7 @@ import { deleteSkill, listSkills, readSkill, saveSkill, skillIndex } from './ski
 import { getJob, jobBrief, jobsText, listJobs, markRun, nextJobDue, removeJob, takeDueJobs, updateJob } from './jobs.mjs';
 import { lookLine, lookSeen } from './looknote.mjs';
 import { leanTools } from './lean.mjs';
+import { createUsageLog } from './usage.mjs';
 import { z } from 'zod';
 
 console.log = console.info = (...a) => console.error(...a);
@@ -128,6 +128,8 @@ const DEFAULTS = {
   subagents: false, // the master switch for subagents: specialists the chat hands background work to (subagents.mjs)
   delegate: 'ask', // 'ask': hand work to subagents only when they ask for an agent or background work; 'auto': also by itself
   crew: {}, // the model picked for each specialist ('provider:model'); one with none follows hybrid models if they are on
+  mcpTrust: {}, // connection name → 'always' when its tools run without the approval bubble (default: ask)
+  mcpTrustAll: false, // one switch: every connection's tools run without the bubble
   backups: false, // the master switch for backup models when one is at its limit or unavailable
   fallbacks: ['', ''], // backup models, in order, for when the default hits its usage limit (limits.mjs)
   efforts: {}, // how hard each model slot thinks: default, each heavy job, backup1, backup2 ('' = automatic, 'off', or a level)
@@ -141,8 +143,6 @@ const DEFAULTS = {
   fishModel: FISH_CHOICES[0].id, // Drama 3 (most expressive) or S2.1 Pro (natural pace, cheaper)
   geminiVoices: {}, // look → the Gemini voice it speaks in, where picked in the setup guide or the panel (else GEMINI_LOOK_VOICES)
   geminiModel: GEMINI_MODEL, // Flash Lite (quick, cheaper) or Flash (studio quality)
-  mcpTrust: {}, // connection name → 'always' when its tools run without the approval bubble (default: ask)
-  mcpTrustAll: false, // one switch: every connection's tools run without the bubble
 };
 const LINUX = process.platform === 'linux';
 // Linux: "x11" or "wayland" (the app says which). Wayland keeps apps from seeing the pointer over other apps and
