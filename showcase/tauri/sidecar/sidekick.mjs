@@ -140,6 +140,7 @@ const DEFAULTS = {
   fishModel: FISH_CHOICES[0].id, // Drama 3 (most expressive) or S2.1 Pro (natural pace, cheaper)
   geminiVoices: {}, // look → the Gemini voice it speaks in, where picked in the setup guide or the panel (else GEMINI_LOOK_VOICES)
   geminiModel: GEMINI_MODEL, // Flash Lite (quick, cheaper) or Flash (studio quality)
+  avatarPin: null, // where the user pinned the Roamie: {corner, x, y, margin}, or null to follow the cursor
 };
 const LINUX = process.platform === 'linux';
 // Linux: "x11" or "wayland" (the app says which). Wayland keeps apps from seeing the pointer over other apps and
@@ -656,6 +657,7 @@ const { tools, hands, whereNow, frontNow: frontData, frontBounds, ink, nextTurn 
   pointScale: () => pointScale(config.model ?? ''),
   jobs: { changed: () => { scheduleJobs(); panel(); }, run: (id) => runJob(getJob(id), { now: true }) },
   skills: { changed: () => panel(), used: (s) => { skillsUsed.add(s.slug); } },
+  saveAvatarPin: (pin) => { if (pin) config.avatarPin = pin; else delete config.avatarPin; saveConfig(); },
   // web_search's side search runs on the chat's own Anthropic sign-in; other providers use the keyless engines.
   sideSearch: async () => {
     if (config.provider !== 'anthropic') return null;
@@ -2905,6 +2907,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     notchUi();
     ui({ kind: 'size', size: sizeNow() });
     ui({ kind: 'look', look: config.look ?? 'classic' });
+    if (config.avatarPin) ui({ kind: 'avatar_pin', ...config.avatarPin }); // pinned before a restart: back where they left it
     if (config.onboarded) ui({ kind: 'greet' });
     agents.sync();
   } else if (m.type?.startsWith('ob_') || m.type?.startsWith('chat_') || m.type === 'set_keys' || m.type === 'set_actions' || m.type === 'set_login' || m.type === 'keybind_error') onGuide(m).catch((e) => console.error('guide', e));
