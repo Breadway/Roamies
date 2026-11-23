@@ -16,7 +16,8 @@
       "deb": {
         "depends": [
           "libasound2",
-          "xdg-utils"
+          "xdg-utils",
+          "libgtk-layer-shell0"
         ],
         "recommends": [
           "libsecret-tools"
@@ -25,7 +26,8 @@
       "rpm": {
         "depends": [
           "alsa-lib",
-          "xdg-utils"
+          "xdg-utils",
+          "gtk-layer-shell"
         ],
         "recommends": [
           "libsecret"
