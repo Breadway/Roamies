@@ -1,11 +1,13 @@
 {
   "bundle": {
     "resources": {
-      "onnxruntime/libonnxruntime.so": "libonnxruntime.so"
+      "onnxruntime/libonnxruntime.so": "libonnxruntime.so",
+      "../dist/": "dist/"
     },
     "externalBin": [
       "binaries/roamies-voice",
-      "binaries/roamies-node"
+      "binaries/roamies-node",
+      "binaries/roamies-overlay"
     ],
     "linux": {
       "appimage": {
@@ -14,7 +16,8 @@
       "deb": {
         "depends": [
           "libasound2",
-          "xdg-utils"
+          "xdg-utils",
+          "libgtk-layer-shell0"
         ],
         "recommends": [
           "libsecret-tools"
@@ -23,7 +26,8 @@
       "rpm": {
         "depends": [
           "alsa-lib",
-          "xdg-utils"
+          "xdg-utils",
+          "gtk-layer-shell"
         ],
         "recommends": [
           "libsecret"

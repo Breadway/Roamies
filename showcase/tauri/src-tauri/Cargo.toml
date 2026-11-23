@@ -1,6 +1,6 @@
 [package]
 name = "roamies"
-version = "0.1.49"
+version = "0.1.50"
 edition = "2021"
 license = "AGPL-3.0-only"
 description = "Roamies: AI desktop companions"
@@ -25,6 +25,9 @@ objc2-service-management = { version = "=0.3.2", default-features = false, featu
 # and the desktop portal on Wayland. All three are already in Cargo.lock through Tauri and its plugins.
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "=0.18.2"
+gtk-layer-shell = { version = "=0.8.2", features = ["v0_6"] }
+webkit2gtk = { version = "=2.0.2", features = ["v2_40"] }
+javascriptcore-rs = "=1.1.2"
 x11rb = "=0.14.0"
 zbus = "=5.19.0"
 

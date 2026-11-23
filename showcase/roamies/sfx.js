@@ -140,7 +140,7 @@
   R.sfx = {
     names: Object.keys(SOUNDS),
     play(name, arg) {
-      const fn = SOUNDS[name];
+      const fn = Object.hasOwn(SOUNDS, name) ? SOUNDS[name] : null;
       if (!fn || !enabled || !unlocked || !live || live.ac.state !== 'running') return;
       const now = live.ac.currentTime;
       if (now - (last[name] ?? -1) < (GAP[name] ?? 0.09)) return;
@@ -149,6 +149,7 @@
     },
     // Offline render, used to check length and loudness of each sound.
     async render(name, secs = 1.2, arg) {
+      if (!Object.hasOwn(SOUNDS, name)) throw new Error(`No sound called ${name}`);
       const ac = new OfflineAudioContext(1, Math.ceil(44100 * secs), 44100);
       SOUNDS[name](rig(ac, ac.destination), 0.01, arg);
       return (await ac.startRendering()).getChannelData(0);

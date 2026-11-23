@@ -10,6 +10,7 @@ cp -R ../roamies ../onboarding ../panel dist/
 ../tauri/sidecar/bundle.sh
 # Ship a Node.js runtime with the app, for the target being built (--target <triple>, else this machine).
 TARGET=""; prev=""; for a in "$@"; do [ "$prev" = "--target" ] && TARGET="$a"; prev="$a"; done
+MODE="${1:-}"; [ $# -gt 0 ] && shift
 ../tauri/sidecar/fetch-node.sh ${TARGET:+"$TARGET"}
 # Windows helpers: voice (Parakeet speech on the PC) and hands (windows, capture, UI Automation, OCR); macOS
 # builds its Swift twins in build.rs. Linux has the voice helper only (the same Rust one as Windows).
@@ -41,6 +42,19 @@ if [ "$(uname)" = "Darwin" ] && [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
   APPLE_SIGNING_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)"
   export APPLE_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:--}"
 fi
+# Linux: build the GTK layer-shell overlay host. Cargo leaves it beside the app binary, which is where the
+# app looks for it, and it goes in binaries/ so Tauri bundles it as an external binary.
+case "$TRIPLE" in
+  *-linux-*)
+    if [ "$MODE" = dev ]; then
+      cargo build --locked ${TARGET:+--target "$TARGET"} --bin roamies-overlay
+      HOST_BIN="target/debug/roamies-overlay"; [ -n "$TARGET" ] && HOST_BIN="target/$TARGET/debug/roamies-overlay"
+    else
+      cargo build --release --locked ${TARGET:+--target "$TARGET"} --bin roamies-overlay
+      HOST_BIN="target/release/roamies-overlay"; [ -n "$TARGET" ] && HOST_BIN="target/$TARGET/release/roamies-overlay"
+    fi
+    mkdir -p binaries
+    cp "$HOST_BIN" "binaries/roamies-overlay-$TRIPLE" ;;
+esac
 # ./build.sh release --target <triple> builds for one target (used by the release workflow).
-MODE="${1:-}"; [ $# -gt 0 ] && shift
 if [ "$MODE" = "dev" ]; then cargo build; else cargo tauri build ${TAURI_BUNDLES:+--bundles $TAURI_BUNDLES} "$@"; fi
